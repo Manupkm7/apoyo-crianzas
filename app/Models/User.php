@@ -9,13 +9,17 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Notifications\Notifiable;
 use Laravel\Sanctum\HasApiTokens;
-use Spatie\Activitylog\LogOptions;
+use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Permission\Traits\HasRoles;
 
 class User extends Authenticatable
 {
     use HasApiTokens, HasFactory, HasRoles, HasUuids, LogsActivity, Notifiable, SoftDeletes;
+
+    // Spatie Permission necesita saber que este modelo usa el guard 'sanctum'.
+    // Sin esto, syncRoles() y hasRole() buscan los roles con guard 'web' y fallan.
+    protected $guard_name = 'sanctum';
 
     protected $fillable = [
         'name',
