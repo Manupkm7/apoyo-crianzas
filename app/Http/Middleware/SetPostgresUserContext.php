@@ -37,9 +37,11 @@ class SetPostgresUserContext
             $userId        = (string) $user->id;
             $institutionId = (string) ($user->institution_id ?? '');
 
-            DB::statement('SET LOCAL app.current_user_id = ?', [$userId]);
-            DB::statement('SET LOCAL app.current_institution_id = ?', [$institutionId]);
-            DB::statement('SET LOCAL app.bypass_rls = ?', [$bypass]);
+            // PostgreSQL no acepta parámetros bindeados ($1) en SET LOCAL.
+            // Los valores son seguros: UUID (solo [0-9a-f-]) o literales 'on'/'off'.
+            DB::statement("SET LOCAL app.current_user_id = '{$userId}'");
+            DB::statement("SET LOCAL app.current_institution_id = '{$institutionId}'");
+            DB::statement("SET LOCAL app.bypass_rls = '{$bypass}'");
 
             $response = $next($request);
 
