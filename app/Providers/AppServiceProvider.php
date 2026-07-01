@@ -12,7 +12,10 @@ use App\Policies\EducationRecordPolicy;
 use App\Policies\HealthRecordPolicy;
 use App\Policies\InstitutionPolicy;
 use App\Policies\UserPolicy;
+use Illuminate\Cache\RateLimiting\Limit;
+use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
+use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
 
 /**
@@ -44,6 +47,12 @@ class AppServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
+        // Rate limiter 'api': 60 requests/minuto por usuario autenticado o por IP.
+        // Requerido por throttleApi() en bootstrap/app.php.
+        RateLimiter::for('api', function (Request $request) {
+            return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
+        });
+
         // Instituciones — gestión del catálogo de instituciones municipales
         Gate::policy(Institution::class, InstitutionPolicy::class);
 
