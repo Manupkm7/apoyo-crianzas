@@ -2,8 +2,14 @@
 
 namespace App\Providers;
 
+use App\Models\Child;
+use App\Models\EducationRecord;
+use App\Models\HealthRecord;
 use App\Models\Institution;
 use App\Models\User;
+use App\Policies\ChildPolicy;
+use App\Policies\EducationRecordPolicy;
+use App\Policies\HealthRecordPolicy;
 use App\Policies\InstitutionPolicy;
 use App\Policies\UserPolicy;
 use Illuminate\Support\Facades\Gate;
@@ -43,5 +49,14 @@ class AppServiceProvider extends ServiceProvider
 
         // Usuarios — gestión de cuentas de usuario del sistema
         Gate::policy(User::class, UserPolicy::class);
+
+        // Niños — registro base compartido entre módulos
+        Gate::policy(Child::class, ChildPolicy::class);
+
+        // Registros educativos — solo para instituciones de tipo 'educacion'
+        Gate::policy(EducationRecord::class, EducationRecordPolicy::class);
+
+        // Registros de salud — solo para instituciones de tipo 'salud'
+        Gate::policy(HealthRecord::class, HealthRecordPolicy::class);
     }
 }

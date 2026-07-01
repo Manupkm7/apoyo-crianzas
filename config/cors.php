@@ -4,12 +4,14 @@
 |--------------------------------------------------------------------------
 | CORS — Sistema de Apoyo a la Crianza
 |--------------------------------------------------------------------------
-| El frontend es un sitio WordPress que consume esta API REST.
-| Configurar FRONTEND_URL en .env con el dominio real de WordPress en producción.
-| En desarrollo se permite localhost:8080 y el puerto 80 por defecto de WordPress.
+| Cuando la aplicación corre con nginx + Cloudflare Tunnel, el frontend y
+| el backend comparten el mismo dominio, por lo que CORS no es un problema
+| en producción. Las reglas aquí cubren el acceso directo al backend y
+| futuros consumidores (WordPress, apps móviles, etc.).
 |
-| Credential support (supports_credentials = true) es necesario si WordPress
-| envía las requests con cookies de sesión o headers de autorización.
+| Variables de entorno relevantes:
+|   FRONTEND_URL   → URL pública del frontend (Cloudflare Tunnel o producción)
+|   APP_ENV=local  → activa los orígenes de desarrollo (localhost, 5173, etc.)
 */
 
 return [
@@ -22,7 +24,9 @@ return [
         env('FRONTEND_URL'),
         env('APP_ENV') === 'local' ? 'http://localhost' : null,
         env('APP_ENV') === 'local' ? 'http://localhost:8080' : null,
+        env('APP_ENV') === 'local' ? 'http://localhost:5173' : null, // Vite dev server
         env('APP_ENV') === 'local' ? 'http://127.0.0.1' : null,
+        env('APP_ENV') === 'local' ? 'http://127.0.0.1:5173' : null, // Vite dev server (alternativo)
     ]),
 
     'allowed_origins_patterns' => [],

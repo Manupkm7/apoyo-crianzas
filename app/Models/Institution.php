@@ -10,6 +10,15 @@ use Illuminate\Database\Eloquent\SoftDeletes;
 use Spatie\Activitylog\LogOptions;
 use Spatie\Activitylog\Traits\LogsActivity;
 
+/*
+ * Institución municipal del sistema.
+ *
+ * Cada institución tiene un tipo (salud, educacion, desarrollo_social, etc.)
+ * que determina qué módulos de datos podrán usar sus usuarios.
+ * Los cambios en nombre, tipo y estado activo quedan registrados automáticamente
+ * en el historial de auditoría.
+ */
+
 class Institution extends Model
 {
     use HasFactory, HasUuids, LogsActivity, SoftDeletes;
@@ -39,30 +48,5 @@ class Institution extends Model
     public function users(): HasMany
     {
         return $this->hasMany(User::class);
-    }
-
-    public function medicalCheckups(): HasMany
-    {
-        return $this->hasMany(MedicalCheckup::class);
-    }
-
-    public function vaccinations(): HasMany
-    {
-        return $this->hasMany(Vaccination::class);
-    }
-
-    public function educationRecords(): HasMany
-    {
-        return $this->hasMany(EducationRecord::class);
-    }
-
-    public function socialRecords(): HasMany
-    {
-        return $this->hasMany(SocialRecord::class);
-    }
-
-    public function observations(): HasMany
-    {
-        return $this->hasMany(Observation::class);
     }
 }

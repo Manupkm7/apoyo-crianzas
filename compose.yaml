@@ -1,4 +1,65 @@
 services:
+
+    # ------------------------------------------------------------------
+    # frontend — Vite dev server con React
+    # Corre dentro de Docker para que nginx pueda alcanzarlo.
+    # node_modules se guarda en un volumen separado para evitar conflictos
+    # entre el sistema de archivos del host y el del contenedor.
+    # ------------------------------------------------------------------
+    frontend:
+        image: 'node:20-alpine'
+        working_dir: '/app'
+        command: sh -c "npm install && npm run dev"
+        volumes:
+            - '../frontend:/app'
+            - 'sail-frontend-node-modules:/app/node_modules'
+        networks:
+            - sail
+        depends_on:
+            - laravel.test
+
+    # ------------------------------------------------------------------
+    # nginx — punto de entrada único
+    # Enruta /api/* al backend y /* al frontend.
+    # Puerto 8080 en el host (para acceso local directo sin tunnel).
+    # ------------------------------------------------------------------
+    nginx:
+        image: 'nginx:alpine'
+        ports:
+            - '${NGINX_PORT:-8080}:80'
+        volumes:
+            - '../docker/nginx/default.conf:/etc/nginx/conf.d/default.conf:ro'
+        depends_on:
+            - laravel.test
+            - frontend
+        networks:
+            - sail
+
+    # ------------------------------------------------------------------
+    # cloudflared — túnel saliente hacia Cloudflare
+    # Modo "quick tunnel": no requiere cuenta ni dominio propio.
+    # Genera una URL pública aleatoria (*.trycloudflare.com) visible en los logs:
+    #   docker compose logs cloudflared
+    #
+    # Limitación: la URL cambia cada vez que se reinicia el contenedor.
+    #
+    # Cuando tengas un dominio propio en Cloudflare, reemplazá el command por:
+    #   command: tunnel --no-autoupdate run
+    # y agregá al .env:
+    #   CLOUDFLARE_TUNNEL_TOKEN=tu-token
+    # y descomentá la sección environment de abajo.
+    # ------------------------------------------------------------------
+    cloudflared:
+        image: 'cloudflare/cloudflared:latest'
+        command: tunnel --no-autoupdate --url http://nginx:80
+        # environment:
+        #     TUNNEL_TOKEN: '${CLOUDFLARE_TUNNEL_TOKEN}'
+        depends_on:
+            - nginx
+        networks:
+            - sail
+        restart: unless-stopped
+
     laravel.test:
         build:
             context: './vendor/laravel/sail/runtimes/8.5'
@@ -71,4 +132,6 @@ volumes:
     sail-pgsql:
         driver: local
     sail-redis:
+        driver: local
+    sail-frontend-node-modules:
         driver: local

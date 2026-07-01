@@ -15,14 +15,16 @@ class RolesAndPermissionsSeeder extends Seeder
     {
         app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
 
-        // Permisos actuales del sistema.
-        // A medida que se agreguen módulos (familias, salud, educación, etc.)
-        // se agregarán los permisos correspondientes aquí.
+        // Permisos del sistema.
+        // Cada permiso controla una capacidad específica dentro del sistema.
+        // El tipo de institución (salud, educacion, etc.) se verifica en las Policies,
+        // no en los permisos, para mantener la estructura flexible.
         $permissions = [
             'usuarios.gestionar',        // Solo admin: crear/editar/desactivar cualquier usuario
             'instituciones.gestionar',   // Solo admin: ABM de instituciones
             'representantes.gestionar',  // Responsable de institución: gestionar sus representantes
             'reportes.ver',              // Coordinador: acceso de lectura global al sistema
+            'ninos.gestionar',           // Instituciones y admin: ABM de niños y sus registros de dominio
         ];
 
         foreach ($permissions as $perm) {
@@ -38,6 +40,7 @@ class RolesAndPermissionsSeeder extends Seeder
             'usuarios.gestionar',
             'instituciones.gestionar',
             'reportes.ver',
+            'ninos.gestionar',
         ]);
 
         // -------------------------------------------------------------------------
@@ -47,6 +50,8 @@ class RolesAndPermissionsSeeder extends Seeder
         $coordinador = Role::firstOrCreate(['name' => 'coordinador', 'guard_name' => 'sanctum']);
         $coordinador->syncPermissions([
             'reportes.ver',
+            // El coordinador tiene visibilidad global pero no puede crear/editar niños.
+            // La Policy de Child permite viewAny a quien tenga 'reportes.ver'.
         ]);
 
         // -------------------------------------------------------------------------
@@ -56,6 +61,7 @@ class RolesAndPermissionsSeeder extends Seeder
         $institucion = Role::firstOrCreate(['name' => 'institucion', 'guard_name' => 'sanctum']);
         $institucion->syncPermissions([
             'representantes.gestionar',
+            'ninos.gestionar', // El responsable puede registrar y gestionar niños de su institución
         ]);
 
         // -------------------------------------------------------------------------
@@ -63,7 +69,9 @@ class RolesAndPermissionsSeeder extends Seeder
         // Rango menor que 'institucion'. Sin permisos de gestión por ahora.
         // -------------------------------------------------------------------------
         $representante = Role::firstOrCreate(['name' => 'representante', 'guard_name' => 'sanctum']);
-        $representante->syncPermissions([]);
+        $representante->syncPermissions([
+            'ninos.gestionar', // El representante también puede registrar y gestionar niños
+        ]);
 
         // -------------------------------------------------------------------------
         // Usuario administrador inicial del sistema

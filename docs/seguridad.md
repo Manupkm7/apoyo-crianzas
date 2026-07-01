@@ -97,13 +97,21 @@ Las respuestas no revelan qué tecnología usa el servidor (se eliminan los enca
 
 ## Capa 7 — Auditoría Completa
 
-Cada vez que un usuario crea, modifica o elimina un registro, el sistema guarda automáticamente:
-- Quién lo hizo (usuario)
-- Qué cambió (campo por campo)
-- Cuándo ocurrió
-- Desde qué institución
+El sistema registra automáticamente toda la actividad relevante en la tabla `activity_log`:
 
-Esta auditoría no puede ser modificada ni eliminada por los usuarios regulares. Solo el administrador puede consultarla.
+| Evento | Qué se registra |
+|---|---|
+| Inicio de sesión | Usuario, fecha/hora, dirección IP |
+| Cierre de sesión | Usuario, fecha/hora |
+| Intento fallido de login | Usuario, IP, cantidad de intentos, si se bloqueó |
+| Creación de usuario | Quién lo creó, qué campos se completaron |
+| Modificación de usuario | Quién lo modificó, qué campos cambiaron y sus valores anteriores/nuevos |
+| Desactivación de usuario | Quién realizó la acción |
+| Creación de institución | Quién la creó, nombre y tipo |
+| Modificación de institución | Qué cambió (nombre, tipo, estado activo) |
+| Desactivación de institución | Quién realizó la acción |
+
+Esta auditoría no puede ser modificada ni eliminada por los usuarios regulares. Los registros se conservan durante **365 días**.
 
 ---
 

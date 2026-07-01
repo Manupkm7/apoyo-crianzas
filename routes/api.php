@@ -1,6 +1,9 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\ChildController;
+use App\Http\Controllers\Api\EducationRecordController;
+use App\Http\Controllers\Api\HealthRecordController;
 use App\Http\Controllers\Api\InstitutionController;
 use App\Http\Controllers\Api\UserController;
 use Illuminate\Support\Facades\Route;
@@ -54,5 +57,41 @@ Route::prefix('v1')->group(function () {
         // - DELETE /api/v1/users/{id}    → desactivar usuario
         // -----------------------------------------------------------------------
         Route::apiResource('users', UserController::class);
+
+        // -----------------------------------------------------------------------
+        // ABM de Niños
+        // - GET    /api/v1/children         → listar niños (filtrado por institución)
+        // - POST   /api/v1/children         → registrar nuevo niño
+        // - GET    /api/v1/children/{id}    → ver perfil completo del niño
+        // - PATCH  /api/v1/children/{id}    → modificar datos del niño
+        // - DELETE /api/v1/children/{id}    → dar de baja (solo admin)
+        // -----------------------------------------------------------------------
+        Route::apiResource('children', ChildController::class);
+
+        // -----------------------------------------------------------------------
+        // Registro educativo de un niño (uno por institución educativa)
+        // - GET    /api/v1/children/{child}/education-record   → ver registro
+        // - POST   /api/v1/children/{child}/education-record   → crear registro
+        // - PATCH  /api/v1/children/{child}/education-record   → modificar registro
+        // - DELETE /api/v1/children/{child}/education-record   → dar de baja (solo admin)
+        // -----------------------------------------------------------------------
+        Route::prefix('children/{child}')->group(function () {
+            Route::get('education-record', [EducationRecordController::class, 'show']);
+            Route::post('education-record', [EducationRecordController::class, 'store']);
+            Route::patch('education-record', [EducationRecordController::class, 'update']);
+            Route::delete('education-record', [EducationRecordController::class, 'destroy']);
+
+            // -----------------------------------------------------------------------
+            // Registro de salud de un niño (uno por institución de salud)
+            // - GET    /api/v1/children/{child}/health-record   → ver registro
+            // - POST   /api/v1/children/{child}/health-record   → crear registro
+            // - PATCH  /api/v1/children/{child}/health-record   → modificar registro
+            // - DELETE /api/v1/children/{child}/health-record   → dar de baja (solo admin)
+            // -----------------------------------------------------------------------
+            Route::get('health-record', [HealthRecordController::class, 'show']);
+            Route::post('health-record', [HealthRecordController::class, 'store']);
+            Route::patch('health-record', [HealthRecordController::class, 'update']);
+            Route::delete('health-record', [HealthRecordController::class, 'destroy']);
+        });
     });
 });

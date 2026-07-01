@@ -130,7 +130,7 @@ proyecto-crianza/
 │   │   ├── Http/
 │   │   │   ├── Controllers/  ← Controladores de la API
 │   │   │   └── Middleware/   ← Filtros de seguridad HTTP
-│   │   ├── Models/           ← Modelos de datos (User, Institution)
+│   │   ├── Models/           ← Modelos de datos (User, Institution, Child…)
 │   │   └── Policies/         ← Reglas de autorización por modelo
 │   ├── config/               ← Configuraciones (cors, permission, etc.)
 │   ├── database/
@@ -140,18 +140,63 @@ proyecto-crianza/
 │   ├── routes/
 │   │   └── api.php           ← Definición de los endpoints de la API
 │   └── .env                  ← Variables de entorno (NO subir a git)
+├── frontend/                 ← Frontend React + Vite (panel de pruebas)
+│   ├── src/
+│   │   ├── api/              ← Cliente HTTP (axios configurado)
+│   │   ├── components/       ← Componentes reutilizables (Layout, tarjetas)
+│   │   ├── context/          ← Estado global (AuthContext)
+│   │   └── pages/            ← Páginas de la aplicación
+│   ├── index.html
+│   ├── vite.config.js
+│   └── package.json
 └── "Sistema de Apoyo a la Crianza.md"  ← Documento de visión del proyecto
 ```
 
 ---
 
+## Cómo levantar el frontend de pruebas
+
+El frontend es una aplicación React + Vite independiente del backend.
+
+### Paso 1 — Instalar dependencias del frontend
+
+Desde la carpeta `frontend/`:
+
+```bash
+npm install
+```
+
+### Paso 2 — Levantar el servidor de desarrollo
+
+```bash
+npm run dev
+```
+
+Abre el navegador en `http://localhost:5173`.
+
+> El frontend incluye un proxy que redirige todas las llamadas a `/api/*` hacia el backend en `localhost:80` (Docker). No hace falta configurar nada más en desarrollo.
+
+### Paso 3 — Iniciar sesión
+
+Usar las credenciales del seeder:
+- Email: `admin@crianza.local`
+- Contraseña: `Crianza2026!Admin#`
+
+> **Importante:** el backend Docker debe estar corriendo antes de abrir el frontend.
+
+---
+
 ## Puertos en uso
 
-| Servicio | Puerto local |
-|---|---|
-| API Laravel | http://localhost (80) |
-| PostgreSQL | localhost:5432 |
-| Redis | localhost:6379 |
+| Servicio | Puerto local | Descripción |
+|---|---|---|
+| nginx (punto de entrada) | http://localhost:8080 | Enruta al frontend y al backend |
+| API Laravel | http://localhost:80 | Acceso directo al backend (sin nginx) |
+| Vite / React | http://localhost:5173 | Solo si corrés Vite en el host (fuera de Docker) |
+| PostgreSQL | localhost:5432 | Base de datos |
+| Redis | localhost:6379 | Caché / colas |
+
+> Para acceder desde internet usá el Cloudflare Tunnel — ver [cloudflare-tunnel.md](cloudflare-tunnel.md).
 
 ---
 
@@ -159,20 +204,60 @@ proyecto-crianza/
 
 Una vez levantado el proyecto, los endpoints funcionales son:
 
+**Sesión**
+
 | Endpoint | Descripción |
 |---|---|
 | `POST   /api/v1/login` | Iniciar sesión |
 | `POST   /api/v1/logout` | Cerrar sesión |
 | `GET    /api/v1/me` | Ver mi perfil completo |
+
+**Instituciones** (solo admin puede crear/modificar/desactivar)
+
+| Endpoint | Descripción |
+|---|---|
 | `GET    /api/v1/institutions` | Listar instituciones |
-| `POST   /api/v1/institutions` | Crear institución (solo admin) |
-| `GET    /api/v1/institutions/{id}` | Ver detalle de una institución |
-| `PATCH  /api/v1/institutions/{id}` | Modificar institución (solo admin) |
-| `DELETE /api/v1/institutions/{id}` | Desactivar institución (solo admin) |
+| `POST   /api/v1/institutions` | Crear institución |
+| `GET    /api/v1/institutions/{id}` | Ver detalle |
+| `PATCH  /api/v1/institutions/{id}` | Modificar |
+| `DELETE /api/v1/institutions/{id}` | Desactivar |
+
+**Usuarios**
+
+| Endpoint | Descripción |
+|---|---|
 | `GET    /api/v1/users` | Listar usuarios |
-| `POST   /api/v1/users` | Crear usuario (admin o responsable) |
-| `GET    /api/v1/users/{id}` | Ver perfil de un usuario |
-| `PATCH  /api/v1/users/{id}` | Modificar usuario |
-| `DELETE /api/v1/users/{id}` | Desactivar usuario |
+| `POST   /api/v1/users` | Crear usuario |
+| `GET    /api/v1/users/{id}` | Ver perfil |
+| `PATCH  /api/v1/users/{id}` | Modificar |
+| `DELETE /api/v1/users/{id}` | Desactivar |
+
+**Niños** (filtrado automático por tipo de institución)
+
+| Endpoint | ¿Quién puede usarlo? |
+|---|---|
+| `GET    /api/v1/children` | Admin ve todos; cada institución ve los suyos |
+| `POST   /api/v1/children` | Admin, institución y representante |
+| `GET    /api/v1/children/{id}` | Ídem — el DNI solo lo ve el admin |
+| `PATCH  /api/v1/children/{id}` | Admin e institución (si el niño está en la institución) |
+| `DELETE /api/v1/children/{id}` | Solo admin |
+
+**Registro educativo** (solo instituciones de tipo `educacion` y admin)
+
+| Endpoint | Descripción |
+|---|---|
+| `GET    /api/v1/children/{id}/education-record` | Ver el registro educativo |
+| `POST   /api/v1/children/{id}/education-record` | Crear registro educativo |
+| `PATCH  /api/v1/children/{id}/education-record` | Modificar |
+| `DELETE /api/v1/children/{id}/education-record` | Desactivar (solo admin) |
+
+**Registro de salud** (solo instituciones de tipo `salud` y admin)
+
+| Endpoint | Descripción |
+|---|---|
+| `GET    /api/v1/children/{id}/health-record` | Ver el registro de salud |
+| `POST   /api/v1/children/{id}/health-record` | Crear registro de salud |
+| `PATCH  /api/v1/children/{id}/health-record` | Modificar |
+| `DELETE /api/v1/children/{id}/health-record` | Desactivar (solo admin) |
 
 Ver referencia completa con ejemplos en [api-endpoints.md](api-endpoints.md).
