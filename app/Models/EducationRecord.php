@@ -48,8 +48,7 @@ class EducationRecord extends Model
     {
         return LogOptions::defaults()
             ->logOnly(['school_name', 'grade_or_year', 'absences_count', 'is_enrolled', 'observations'])
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
+            ->logOnlyDirty();
     }
 
     public function child(): BelongsTo

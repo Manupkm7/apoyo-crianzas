@@ -49,8 +49,7 @@ class HealthRecord extends Model
     {
         return LogOptions::defaults()
             ->logOnly(['health_center_name', 'healthy_checkup_current', 'vaccines_current', 'last_checkup_date', 'observations'])
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
+            ->logOnlyDirty();
     }
 
     public function child(): BelongsTo

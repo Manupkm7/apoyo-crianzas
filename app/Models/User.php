@@ -56,8 +56,7 @@ class User extends Authenticatable
     {
         return LogOptions::defaults()
             ->logOnly(['name', 'email', 'institution_id', 'is_active', 'is_institution_head'])
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
+            ->logOnlyDirty();
     }
 
     public function institution(): BelongsTo

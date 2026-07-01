@@ -53,8 +53,7 @@ class Child extends Model
         // DNI nunca va al historial de auditoría. birth_date sí, porque es relevante para alertas.
         return LogOptions::defaults()
             ->logOnly(['first_name', 'last_name', 'birth_date', 'notes'])
-            ->logOnlyDirty()
-            ->dontSubmitEmptyLogs();
+            ->logOnlyDirty();
     }
 
     /**
