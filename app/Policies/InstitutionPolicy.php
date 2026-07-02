@@ -9,14 +9,11 @@ use App\Models\User;
  * InstitutionPolicy — Define quién puede hacer qué con las instituciones.
  *
  * Reglas generales:
- * - Solo el administrador puede crear, modificar o desactivar instituciones.
- * - El coordinador puede ver todas las instituciones (necesita ese contexto para su trabajo).
- * - Un usuario de institución (responsable o representante) solo puede ver SU propia institución.
- *
- * En la práctica, cuando el frontend pide la lista de instituciones:
- * - Un admin ve todas.
- * - Un coordinador ve todas.
- * - Un responsable de institución ve solo la suya.
+ * - Admin: puede crear, modificar completamente (nombre, tipo, estado) y desactivar.
+ * - Coordinador: puede ver todas las instituciones (necesita ese contexto para su trabajo).
+ * - Responsable de institución: puede ver su propia institución y editar solo
+ *   sus datos de contacto (dirección y teléfono) — no puede cambiar nombre, tipo ni estado.
+ * - Representante: no puede gestionar instituciones en absoluto.
  */
 class InstitutionPolicy
 {
@@ -41,12 +38,10 @@ class InstitutionPolicy
      */
     public function view(User $user, Institution $institution): bool
     {
-        // Admin y coordinador ven cualquier institución
         if ($user->can('instituciones.gestionar') || $user->can('reportes.ver')) {
             return true;
         }
 
-        // Los usuarios institucionales solo ven la propia
         return $user->institution_id === $institution->id;
     }
 
@@ -63,19 +58,25 @@ class InstitutionPolicy
     /**
      * ¿Puede este usuario modificar los datos de una institución?
      *
-     * Solo el administrador puede modificar instituciones existentes.
+     * - Admin: puede modificar todo (nombre, tipo, dirección, teléfono, estado).
+     * - Responsable de institución: puede modificar solo datos de contacto
+     *   de SU propia institución (dirección y teléfono). Los campos
+     *   sensibles (nombre, tipo, is_active) están restringidos en el Form Request.
      */
     public function update(User $user, Institution $institution): bool
     {
-        return $user->can('instituciones.gestionar');
+        if ($user->can('instituciones.gestionar')) {
+            return true;
+        }
+
+        // El responsable puede editar los datos de contacto de su propia institución
+        return $user->isInstitucion() && $user->institution_id === $institution->id;
     }
 
     /**
      * ¿Puede este usuario desactivar (dar de baja) una institución?
      *
      * Solo el administrador puede desactivar instituciones.
-     * Nota: las instituciones nunca se borran físicamente del sistema,
-     * solo se marcan como inactivas (soft delete).
      */
     public function delete(User $user, Institution $institution): bool
     {

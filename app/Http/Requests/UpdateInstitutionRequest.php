@@ -6,54 +6,70 @@ use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
 /**
- * UpdateInstitutionRequest — Valida los datos para modificar una institución existente.
+ * UpdateInstitutionRequest — Valida los datos para modificar una institución.
  *
- * Diferencias con StoreInstitutionRequest:
- * - Todos los campos son opcionales (es un PATCH parcial).
- * - La validación de unicidad del nombre ignora la institución actual
- *   (así se permite guardar sin cambiar el nombre).
+ * Dos niveles de acceso:
+ *
+ * 1. Administrador: puede modificar todos los campos (nombre, tipo, dirección,
+ *    teléfono y estado activo/inactivo).
+ *
+ * 2. Responsable de institución (rol 'institucion'): solo puede modificar
+ *    los datos de contacto (dirección y teléfono) de SU propia institución.
+ *    Nombre, tipo y estado son campos sensibles que solo el admin controla.
  */
 class UpdateInstitutionRequest extends FormRequest
 {
     /**
-     * Solo el administrador puede modificar instituciones.
+     * ¿Está autorizado este usuario a modificar esta institución?
+     *
+     * - Admin: puede modificar cualquier institución.
+     * - Responsable: solo puede modificar la suya propia.
      */
     public function authorize(): bool
     {
-        return $this->user()->can('instituciones.gestionar');
+        $institution = $this->route('institution');
+        $user        = $this->user();
+
+        if ($user->can('instituciones.gestionar')) {
+            return true;
+        }
+
+        // El responsable puede editar datos de contacto de su propia institución
+        return $user->isInstitucion() && $user->institution_id === $institution?->id;
     }
 
     /**
-     * Define qué campos se pueden actualizar y cómo deben ser.
+     * Define qué campos se pueden actualizar según el rol del usuario.
      *
-     * El uso de 'sometimes' permite enviar solo los campos que se quieren cambiar.
+     * El uso de 'sometimes' permite enviar solo los campos que se quieren cambiar (PATCH).
      */
     public function rules(): array
     {
-        // Obtenemos el ID de la institución que se está editando para excluirla
-        // de la validación de nombre único (así puede guardar con el mismo nombre)
         $institutionId = $this->route('institution')?->id;
 
-        return [
+        // Datos de contacto: cualquier usuario autorizado puede actualizarlos
+        $contactRules = [
+            'address' => ['sometimes', 'nullable', 'string', 'max:500'],
+            'phone'   => ['sometimes', 'nullable', 'string', 'max:30'],
+        ];
+
+        // Campos sensibles: solo el admin puede modificarlos
+        if (! $this->user()->can('instituciones.gestionar')) {
+            return $contactRules;
+        }
+
+        return array_merge($contactRules, [
             'name' => [
                 'sometimes',
                 'string',
                 'max:255',
-                // El nombre debe ser único, pero ignoramos la institución actual
                 Rule::unique('institutions', 'name')
                     ->ignore($institutionId)
                     ->whereNull('deleted_at'),
             ],
-
-            'type' => [
-                'sometimes',
-                Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro']),
-            ],
-
-            'address'   => ['sometimes', 'nullable', 'string', 'max:500'],
-            'phone'     => ['sometimes', 'nullable', 'string', 'max:30'],
+            'type'      => ['sometimes', Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro'])],
             'is_active' => ['sometimes', 'boolean'],
-        ];
+        ]);
     }
 
     /**

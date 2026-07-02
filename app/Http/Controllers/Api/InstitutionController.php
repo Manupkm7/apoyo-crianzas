@@ -107,7 +107,10 @@ class InstitutionController extends Controller
      */
     public function update(UpdateInstitutionRequest $request, Institution $institution): InstitutionResource
     {
-        // La autorización fue verificada en UpdateInstitutionRequest::authorize()
+        // La autorización se verifica en dos capas:
+        // 1. UpdateInstitutionRequest::authorize() — acceso rápido antes de validar campos
+        // 2. InstitutionPolicy::update() — verificación por modelo (quién puede editar cuál)
+        $this->authorize('update', $institution);
 
         $institution->update([
             ...$request->validated(),
