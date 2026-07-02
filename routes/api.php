@@ -50,13 +50,15 @@ Route::prefix('v1')->group(function () {
 
         // -----------------------------------------------------------------------
         // ABM de Usuarios
-        // - GET    /api/v1/users         → listar usuarios
-        // - POST   /api/v1/users         → crear usuario
-        // - GET    /api/v1/users/{id}    → ver perfil de usuario
-        // - PATCH  /api/v1/users/{id}    → modificar usuario
-        // - DELETE /api/v1/users/{id}    → desactivar usuario
+        // - GET    /api/v1/users                   → listar usuarios
+        // - POST   /api/v1/users                   → crear usuario
+        // - GET    /api/v1/users/{id}              → ver perfil de usuario
+        // - PATCH  /api/v1/users/{id}              → modificar usuario
+        // - DELETE /api/v1/users/{id}              → desactivar usuario
+        // - GET    /api/v1/users/{id}/activity     → actividad del usuario (audit log)
         // -----------------------------------------------------------------------
         Route::apiResource('users', UserController::class);
+        Route::get('users/{user}/activity', [UserController::class, 'activityLog']);
 
         // -----------------------------------------------------------------------
         // ABM de Niños

@@ -5,11 +5,13 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\StoreUserRequest;
 use App\Http\Requests\UpdateUserRequest;
+use App\Http\Resources\ActivityResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Spatie\Activitylog\Models\Activity;
 
 /**
  * UserController — ABM (Alta, Baja, Modificación) de usuarios.
@@ -195,6 +197,32 @@ class UserController extends Controller
         return response()->json([
             'message' => 'Usuario desactivado correctamente.',
         ]);
+    }
+
+    /**
+     * Devuelve el historial de actividad de un usuario (qué acciones realizó en el sistema).
+     *
+     * Sirve para que los responsables de institución puedan auditar lo que hicieron
+     * sus representantes: qué niños registraron, qué datos cargaron o modificaron.
+     *
+     * ¿Quién puede verlo?
+     * - Admin y coordinador: pueden ver la actividad de cualquier usuario.
+     * - Responsable de institución: puede ver la actividad de sus propios representantes.
+     *
+     * La autorización reutiliza la política `view` de UserPolicy:
+     * si podés ver el usuario, podés ver su actividad.
+     */
+    public function activityLog(Request $request, User $user): AnonymousResourceCollection
+    {
+        $this->authorize('view', $user);
+
+        $logs = Activity::query()
+            ->where('causer_type', User::class)
+            ->where('causer_id', $user->id)
+            ->orderByDesc('created_at')
+            ->paginate(30);
+
+        return ActivityResource::collection($logs);
     }
 
     // =========================================================================
