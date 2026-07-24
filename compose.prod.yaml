@@ -43,6 +43,8 @@ services:
       context: .
       dockerfile: deploy/Dockerfile
     volumes:
+      # El .env vive en el VPS y se monta en el contenedor (nunca se bake en la imagen)
+      - ./.env:/var/www/html/.env:ro
       # Storage persistente fuera de la imagen (archivos subidos, logs)
       - laravel_storage:/var/www/html/storage/app/public
       - laravel_logs:/var/www/html/storage/logs
