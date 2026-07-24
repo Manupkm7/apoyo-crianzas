@@ -19,10 +19,8 @@ RUN docker-php-ext-install \
     zip \
     mbstring \
     xml \
-    ctype \
     bcmath \
-    pcntl \
-    tokenizer
+    pcntl
 
 # Redis (via PECL — no está en las extensiones core de PHP)
 RUN pecl install redis && docker-php-ext-enable redis
