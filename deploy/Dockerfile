@@ -1,4 +1,4 @@
-FROM php:8.3-fpm-alpine
+FROM php:8.4-fpm-alpine
 
 # install-php-extensions maneja todas las dependencias del sistema automáticamente.
 # Evita tener que instalar autoconf, pecl, librerías de desarrollo, etc. manualmente.
