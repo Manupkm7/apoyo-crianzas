@@ -12,20 +12,18 @@
      listen 80;
      server_name sistemaapoyoalacrianza.cloud;
      return 301 https://$host$request_uri;
-}
+ }
 
 # ─── Servidor principal ────────────────────────────────────────────────────
 server {
-    listen 443 ssl;
+    listen 80;
 
     # Después de obtener el certificado SSL, reemplazar las dos líneas
     # de arriba por estas (y descomentar el redirect de arriba):
-    # listen 443 ssl;
-    # ssl_certificate     /etc/letsencrypt/live/tu-dominio.com/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/tu-dominio.com/privkey.pem;
-ssl_certificate     /etc/letsencrypt/live/sistemaapoyoalacrianza.cloud/fullchain.pem;
-ssl_certificate_key /etc/letsencrypt/live/sistemaapoyoalacrianza.cloud/privkey.pem;    
- include /etc/letsencrypt/options-ssl-nginx.conf;
+     listen 443 ssl;
+     ssl_certificate     /etc/letsencrypt/live/tu-dominio.com/fullchain.pem;
+     ssl_certificate_key /etc/letsencrypt/live/tu-dominio.com/privkey.pem;
+     include /etc/letsencrypt/options-ssl-nginx.conf;
 
     server_name _;
 
