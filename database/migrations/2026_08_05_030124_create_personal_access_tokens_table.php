@@ -11,7 +11,7 @@ return new class extends Migration
      */
     public function up(): void
     {
-        Schema::create('personal_access_tokens', function (Blueprint $table) {
+        Schema::createIfNotExists('personal_access_tokens', function (Blueprint $table) {
             $table->id();
             // uuidMorphs (no morphs): los modelos de este proyecto usan UUID como
             // primary key (HasUuids), así que tokenable_id debe ser uuid, no bigint.
