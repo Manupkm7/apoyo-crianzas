@@ -11,7 +11,8 @@ RUN install-php-extensions \
     xml \
     bcmath \
     pcntl \
-    redis
+    redis \
+    gd
 
 # ─── Composer ───────────────────────────────────────────────────────────────
 COPY --from=composer:2 /usr/bin/composer /usr/bin/composer
