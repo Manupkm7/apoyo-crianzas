@@ -225,6 +225,39 @@ class UserController extends Controller
         return ActivityResource::collection($logs);
     }
 
+    /**
+     * Asigna (o quita) permisos directos a un usuario específico.
+     *
+     * Los permisos directos son adicionales a los que hereda del rol.
+     * Solo el admin puede modificar permisos directos; se usa syncPermissions
+     * para que la lista enviada sea el estado final (no incremental).
+     *
+     * Endpoint: PUT /api/v1/users/{user}/permissions
+     */
+    public function syncDirectPermissions(Request $request, User $user): JsonResponse
+    {
+        abort_unless($request->user()->isAdmin(), 403, 'Solo el administrador puede gestionar permisos directos.');
+
+        $data = $request->validate([
+            'permissions'   => ['required', 'array'],
+            'permissions.*' => ['string', 'exists:permissions,name'],
+        ]);
+
+        $user->syncPermissions($data['permissions']);
+
+        app()[\Spatie\Permission\PermissionRegistrar::class]->forgetCachedPermissions();
+
+        return response()->json([
+            'data' => [
+                'id'                 => $user->id,
+                'name'               => $user->name,
+                'role_permissions'   => $user->getPermissionsViaRoles()->pluck('name')->values(),
+                'direct_permissions' => $user->getDirectPermissions()->pluck('name')->values(),
+                'all_permissions'    => $user->getAllPermissions()->pluck('name')->values(),
+            ],
+        ]);
+    }
+
     // =========================================================================
     // Métodos privados de apoyo
     // =========================================================================

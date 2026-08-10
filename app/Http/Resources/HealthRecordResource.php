@@ -23,6 +23,7 @@ class HealthRecordResource extends JsonResource
             'vaccines_current'         => $this->vaccines_current,
             'last_checkup_date'        => $this->last_checkup_date?->toDateString(),
             'observations'             => $this->observations,
+            'health_profile'           => $this->health_profile,
 
             // Se incluye el nombre de la institución solo cuando se cargó la relación
             'institution'              => $this->whenLoaded('institution', fn () => [

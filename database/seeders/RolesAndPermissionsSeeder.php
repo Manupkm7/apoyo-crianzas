@@ -25,6 +25,7 @@ class RolesAndPermissionsSeeder extends Seeder
             'representantes.gestionar',  // Responsable de institución: gestionar sus representantes
             'reportes.ver',              // Coordinador: acceso de lectura global al sistema
             'ninos.gestionar',           // Instituciones y admin: ABM de niños y sus registros de dominio
+            'importaciones.gestionar',   // Solo admin: subir archivos y resolver la cola de revisión manual
         ];
 
         foreach ($permissions as $perm) {
@@ -41,6 +42,7 @@ class RolesAndPermissionsSeeder extends Seeder
             'instituciones.gestionar',
             'reportes.ver',
             'ninos.gestionar',
+            'importaciones.gestionar',
         ]);
 
         // -------------------------------------------------------------------------

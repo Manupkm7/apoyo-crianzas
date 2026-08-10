@@ -25,6 +25,7 @@ class UpdateHealthRecordRequest extends FormRequest
             'vaccines_current'        => ['sometimes', 'boolean'],
             'last_checkup_date'       => ['nullable', 'date', 'before_or_equal:today'],
             'observations'            => ['nullable', 'string', 'max:3000'],
+            'health_profile'          => ['nullable', 'string', 'max:3000'],
         ];
     }
 

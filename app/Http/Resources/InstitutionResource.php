@@ -33,6 +33,13 @@ class InstitutionResource extends JsonResource
             'phone'       => $this->phone,
             'is_active'   => $this->is_active,
 
+            // Configuración de niveles educativos — solo relevante cuando type === 'educacion'
+            'offers_jardin'     => $this->offers_jardin,
+            'offers_primario'   => $this->offers_primario,
+            'primario_years'    => $this->primario_years,
+            'offers_secundario' => $this->offers_secundario,
+            'secundario_years'  => $this->secundario_years,
+
             // Se incluye solo si se cargó el conteo de usuarios (withCount('users'))
             'users_count' => $this->when(
                 isset($this->users_count),

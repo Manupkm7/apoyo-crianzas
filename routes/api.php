@@ -1,10 +1,19 @@
 <?php
 
 use App\Http\Controllers\Api\AuthController;
+use App\Http\Controllers\Api\BirthRecordController;
 use App\Http\Controllers\Api\ChildController;
+use App\Http\Controllers\Api\DatabaseExportController;
+use App\Http\Controllers\Api\DeathRecordController;
+use App\Http\Controllers\Api\EducationDashboardController;
+use App\Http\Controllers\Api\EducationObservationController;
 use App\Http\Controllers\Api\EducationRecordController;
+use App\Http\Controllers\Api\HealthObservationController;
 use App\Http\Controllers\Api\HealthRecordController;
+use App\Http\Controllers\Api\ImportController;
 use App\Http\Controllers\Api\InstitutionController;
+use App\Http\Controllers\Api\PermissionController;
+use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\UserController;
 use Illuminate\Support\Facades\Route;
 
@@ -59,6 +68,26 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------------
         Route::apiResource('users', UserController::class);
         Route::get('users/{user}/activity', [UserController::class, 'activityLog']);
+        Route::put('users/{user}/permissions', [UserController::class, 'syncDirectPermissions']);
+
+        // -----------------------------------------------------------------------
+        // Roles y permisos — solo administrador
+        // - GET    /api/v1/roles                       → listar roles con permisos
+        // - POST   /api/v1/roles                       → crear rol personalizado
+        // - PUT    /api/v1/roles/{role}                → actualizar permisos de un rol
+        // - DELETE /api/v1/roles/{role}                → eliminar rol personalizado
+        // - GET    /api/v1/permissions                 → listar todos los permisos
+        // - POST   /api/v1/permissions                 → crear nuevo permiso
+        // - DELETE /api/v1/permissions/{permission}    → eliminar permiso (si no está en uso)
+        // -----------------------------------------------------------------------
+        Route::get('roles', [RoleController::class, 'index']);
+        Route::post('roles', [RoleController::class, 'store']);
+        Route::put('roles/{role}', [RoleController::class, 'update']);
+        Route::delete('roles/{role}', [RoleController::class, 'destroy']);
+
+        Route::get('permissions', [PermissionController::class, 'index']);
+        Route::post('permissions', [PermissionController::class, 'store']);
+        Route::delete('permissions/{permission}', [PermissionController::class, 'destroy']);
 
         // -----------------------------------------------------------------------
         // ABM de Niños
@@ -69,6 +98,46 @@ Route::prefix('v1')->group(function () {
         // - DELETE /api/v1/children/{id}    → dar de baja (solo admin)
         // -----------------------------------------------------------------------
         Route::apiResource('children', ChildController::class);
+
+        // -----------------------------------------------------------------------
+        // Dashboard de instituciones educativas
+        // - GET /api/v1/education-dashboard[?institution_id=]  → conteo de niños y
+        //   alertas por nivel/grado (admin/coordinador pueden pasar institution_id)
+        // -----------------------------------------------------------------------
+        Route::get('education-dashboard', [EducationDashboardController::class, 'show']);
+
+        // -----------------------------------------------------------------------
+        // Descarga de adjuntos de observaciones (PDF) — siempre reverifica el
+        // acceso al registro antes de servir el archivo.
+        // -----------------------------------------------------------------------
+        Route::get('education-observations/{observation}/attachment', [EducationObservationController::class, 'downloadAttachment'])
+            ->name('education-observations.attachment');
+
+        Route::get('health-observations/{observation}/attachment', [HealthObservationController::class, 'downloadAttachment'])
+            ->name('health-observations.attachment');
+
+        // -----------------------------------------------------------------------
+        // Exportación completa de la base de datos — exclusivo del administrador.
+        // - GET /api/v1/database-export → descarga un ZIP con todos los datos
+        //   del sistema (menos activity_log, ver DatabaseExportController).
+        // -----------------------------------------------------------------------
+        Route::get('database-export', [DatabaseExportController::class, 'download']);
+
+        // -----------------------------------------------------------------------
+        // Importaciones masivas (Registro Civil y Educación)
+        // - GET    /api/v1/imports                                 → listar batches
+        // - POST   /api/v1/imports                                 → subir archivo [solo admin]
+        // - GET    /api/v1/imports/{batch}                         → detalle de batch
+        // - GET    /api/v1/imports/{batch}/rows                    → filas (?status=partial_match|no_match|...)
+        // - PATCH  /api/v1/imports/{batch}/rows/{row}/resolve      → resolver fila [solo admin]
+        // -----------------------------------------------------------------------
+        Route::prefix('imports')->group(function () {
+            Route::get('/',                                [ImportController::class, 'index']);
+            Route::post('/',                               [ImportController::class, 'store']);
+            Route::get('/{batch}',                         [ImportController::class, 'show']);
+            Route::get('/{batch}/rows',                    [ImportController::class, 'rows']);
+            Route::patch('/{batch}/rows/{row}/resolve',    [ImportController::class, 'resolveRow']);
+        });
 
         // -----------------------------------------------------------------------
         // Registro educativo de un niño (uno por institución educativa)
@@ -83,6 +152,10 @@ Route::prefix('v1')->group(function () {
             Route::patch('education-record', [EducationRecordController::class, 'update']);
             Route::delete('education-record', [EducationRecordController::class, 'destroy']);
 
+            // Bitácora de observaciones del registro educativo (texto + PDF opcional)
+            Route::get('education-record/observations', [EducationObservationController::class, 'index']);
+            Route::post('education-record/observations', [EducationObservationController::class, 'store']);
+
             // -----------------------------------------------------------------------
             // Registro de salud de un niño (uno por institución de salud)
             // - GET    /api/v1/children/{child}/health-record   → ver registro
@@ -94,6 +167,35 @@ Route::prefix('v1')->group(function () {
             Route::post('health-record', [HealthRecordController::class, 'store']);
             Route::patch('health-record', [HealthRecordController::class, 'update']);
             Route::delete('health-record', [HealthRecordController::class, 'destroy']);
+
+            // Bitácora de observaciones del registro de salud (texto + PDF opcional)
+            // Solo la institución de salud puede crear entradas (no representantes).
+            Route::get('health-record/observations', [HealthObservationController::class, 'index']);
+            Route::post('health-record/observations', [HealthObservationController::class, 'store']);
+
+            // -----------------------------------------------------------------------
+            // Registro de nacimiento de un niño (uno por niño, mayormente vía importación)
+            // - GET    /api/v1/children/{child}/birth-record   → ver registro [admin/coordinador]
+            // - POST   /api/v1/children/{child}/birth-record   → crear registro [solo admin]
+            // - PATCH  /api/v1/children/{child}/birth-record   → corregir registro [solo admin]
+            // - DELETE /api/v1/children/{child}/birth-record   → dar de baja [solo admin]
+            // -----------------------------------------------------------------------
+            Route::get('birth-record', [BirthRecordController::class, 'show']);
+            Route::post('birth-record', [BirthRecordController::class, 'store']);
+            Route::patch('birth-record', [BirthRecordController::class, 'update']);
+            Route::delete('birth-record', [BirthRecordController::class, 'destroy']);
+
+            // -----------------------------------------------------------------------
+            // Registro de defunción de un niño (uno por niño, mayormente vía importación)
+            // - GET    /api/v1/children/{child}/death-record   → ver registro [admin/coordinador]
+            // - POST   /api/v1/children/{child}/death-record   → crear registro [solo admin]
+            // - PATCH  /api/v1/children/{child}/death-record   → corregir registro [solo admin]
+            // - DELETE /api/v1/children/{child}/death-record   → dar de baja [solo admin]
+            // -----------------------------------------------------------------------
+            Route::get('death-record', [DeathRecordController::class, 'show']);
+            Route::post('death-record', [DeathRecordController::class, 'store']);
+            Route::patch('death-record', [DeathRecordController::class, 'update']);
+            Route::delete('death-record', [DeathRecordController::class, 'destroy']);
         });
     });
 });

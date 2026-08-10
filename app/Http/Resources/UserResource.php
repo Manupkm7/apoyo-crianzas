@@ -42,11 +42,17 @@ class UserResource extends JsonResource
                 $this->roles->pluck('name')
             ),
 
-            // Los permisos solo se incluyen si fueron cargados explícitamente,
-            // para no sobrecargar los listados con datos innecesarios
+            // Todos los permisos efectivos (rol + directos) — solo en detalle, no en listados
             'permissions'         => $this->when(
                 $request->routeIs('users.show') || $request->routeIs('me'),
                 fn () => $this->getAllPermissions()->pluck('name')
+            ),
+
+            // Permisos asignados directamente al usuario (no heredados del rol)
+            // Necesario para que el admin pueda ver y editar los overrides por usuario.
+            'direct_permissions'  => $this->when(
+                $request->routeIs('users.show') || $request->routeIs('me'),
+                fn () => $this->getDirectPermissions()->pluck('name')
             ),
 
             // Datos de la institución a la que pertenece el usuario

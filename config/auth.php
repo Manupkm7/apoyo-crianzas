@@ -42,6 +42,14 @@ return [
             'driver' => 'session',
             'provider' => 'users',
         ],
+
+        // Necesario para que Spatie\Permission pueda resolver el modelo User
+        // a través de getModelForGuard('sanctum') en las relaciones users().
+        // No afecta cómo Sanctum autentica — eso lo maneja PersonalAccessTokenGuard.
+        'sanctum' => [
+            'driver' => 'sanctum',
+            'provider' => 'users',
+        ],
     ],
 
     /*

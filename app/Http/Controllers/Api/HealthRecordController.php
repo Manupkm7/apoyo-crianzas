@@ -59,12 +59,14 @@ class HealthRecordController extends Controller
     {
         $this->authorize('create', HealthRecord::class);
 
-        $institutionId = $request->user()->institution_id;
+        // El admin elige la institución (no tiene una propia); el resto usa la suya.
+        // targetInstitution() ya validó que sea válida y de tipo 'salud'.
+        $institutionId = $request->targetInstitution()->id;
 
         // Un niño solo puede tener un registro por institución de salud
         if ($child->healthRecord()->where('institution_id', $institutionId)->exists()) {
             return response()->json([
-                'message' => 'Ya existe un registro de salud de este niño para tu institución.',
+                'message' => 'Ya existe un registro de salud de este niño para esa institución.',
             ], 409);
         }
 

@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasOne;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
@@ -80,6 +81,16 @@ class Child extends Model
     public function healthRecord(): HasOne
     {
         return $this->hasOne(HealthRecord::class);
+    }
+
+    public function birthRecord(): HasOne
+    {
+        return $this->hasOne(BirthRecord::class);
+    }
+
+    public function deathRecord(): HasOne
+    {
+        return $this->hasOne(DeathRecord::class);
     }
 
     public function creator(): BelongsTo

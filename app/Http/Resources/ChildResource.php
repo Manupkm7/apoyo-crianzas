@@ -37,7 +37,8 @@ class ChildResource extends JsonResource
 
     public function toArray(Request $request): array
     {
-        $user = $request->user();
+        $user   = $request->user();
+        $alerts = $this->computeAlerts();
 
         return [
             'id'         => $this->id,
@@ -68,8 +69,64 @@ class ChildResource extends JsonResource
                     : null;
             }),
 
+            // Registro de nacimiento — solo admin/coordinador (ver BirthRecordPolicy)
+            'birth_record' => $this->whenLoaded('birthRecord', function () {
+                return $this->birthRecord
+                    ? new BirthRecordResource($this->birthRecord)
+                    : null;
+            }),
+
+            // Registro de defunción — solo admin/coordinador (ver DeathRecordPolicy)
+            'death_record' => $this->whenLoaded('deathRecord', function () {
+                return $this->deathRecord
+                    ? new DeathRecordResource($this->deathRecord)
+                    : null;
+            }),
+
+            // Alertas calculadas a partir de los registros que el usuario puede ver
+            // (inasistencias elevadas, no escolarizado, controles/vacunas atrasadas).
+            'alerts'    => $alerts,
+            'has_alert' => count($alerts) > 0,
+
+            // Solo presente en el detalle para usuarios institucionales: indica si el niño
+            // tiene una alerta en el OTRO sector, sin revelar el detalle (ver ChildController::show).
+            'other_sector_alert' => $this->when(
+                ! is_null($this->other_sector_alert),
+                fn () => (bool) $this->other_sector_alert
+            ),
+
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
         ];
+    }
+
+    /**
+     * Junta las alertas visibles de este niño según lo que el usuario tiene cargado
+     * (educationRecord/healthRecord). El mismo criterio se usa en ChildController
+     * para el filtro `?alert=1` y para el conteo de `alerts_count`.
+     */
+    private function computeAlerts(): array
+    {
+        $alerts = [];
+
+        if ($this->relationLoaded('educationRecord') && $this->educationRecord) {
+            if (! $this->educationRecord->is_enrolled) {
+                $alerts[] = 'No escolarizado';
+            }
+            if ($this->educationRecord->absences_count > 10) {
+                $alerts[] = 'Inasistencias elevadas';
+            }
+        }
+
+        if ($this->relationLoaded('healthRecord') && $this->healthRecord) {
+            if (! $this->healthRecord->healthy_checkup_current) {
+                $alerts[] = 'Control de niño sano atrasado';
+            }
+            if (! $this->healthRecord->vaccines_current) {
+                $alerts[] = 'Vacunas atrasadas';
+            }
+        }
+
+        return $alerts;
     }
 }

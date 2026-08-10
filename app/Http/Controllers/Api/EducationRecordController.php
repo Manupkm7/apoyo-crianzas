@@ -60,12 +60,14 @@ class EducationRecordController extends Controller
     {
         $this->authorize('create', EducationRecord::class);
 
-        $institutionId = $request->user()->institution_id;
+        // El admin elige la institución (no tiene una propia); el resto usa la suya.
+        // targetInstitution() ya validó que sea válida y de tipo 'educacion'.
+        $institutionId = $request->targetInstitution()->id;
 
         // Un niño solo puede tener un registro por institución educativa
         if ($child->educationRecord()->where('institution_id', $institutionId)->exists()) {
             return response()->json([
-                'message' => 'Ya existe un registro educativo de este niño para tu institución.',
+                'message' => 'Ya existe un registro educativo de este niño para esa institución.',
             ], 409);
         }
 

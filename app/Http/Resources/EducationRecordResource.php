@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Models\EducationRecord;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -20,7 +21,20 @@ class EducationRecordResource extends JsonResource
             'child_id'       => $this->child_id,
             'school_name'    => $this->school_name,
             'grade_or_year'  => $this->grade_or_year,
+
+            'level'          => $this->level,
+            'level_label'    => $this->level ? EducationRecord::levelLabel($this->level) : null,
+            'grade'          => $this->grade,
+            'grade_label'    => ($this->level && $this->grade)
+                ? EducationRecord::gradeLabel($this->level, $this->grade)
+                : null,
+
             'absences_count' => $this->absences_count,
+
+            'attendance_present_days' => $this->attendance_present_days,
+            'attendance_total_days'   => $this->attendance_total_days,
+            'attendance_period_label' => $this->attendance_period_label,
+
             'is_enrolled'    => $this->is_enrolled,
             'observations'   => $this->observations,
 

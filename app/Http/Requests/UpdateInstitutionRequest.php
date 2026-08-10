@@ -69,6 +69,13 @@ class UpdateInstitutionRequest extends FormRequest
             ],
             'type'      => ['sometimes', Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro'])],
             'is_active' => ['sometimes', 'boolean'],
+
+            // Niveles educativos que ofrece — solo tiene efecto si type === 'educacion'
+            'offers_jardin'     => ['sometimes', 'boolean'],
+            'offers_primario'   => ['sometimes', 'boolean'],
+            'primario_years'    => ['nullable', 'integer', Rule::in([6, 7])],
+            'offers_secundario' => ['sometimes', 'boolean'],
+            'secundario_years'  => ['nullable', 'integer', Rule::in([6, 7])],
         ]);
     }
 

@@ -99,7 +99,11 @@ class AuthController extends Controller
                 'email'       => $user->email,
                 'roles'       => $user->getRoleNames(),
                 'permissions' => $user->getAllPermissions()->pluck('name'),
-                'institution' => $user->institution?->only(['id', 'name', 'type']),
+                'institution' => $user->institution?->only([
+                'id', 'name', 'type',
+                'offers_jardin', 'offers_primario', 'primario_years',
+                'offers_secundario', 'secundario_years',
+            ]),
             ],
         ]);
     }
@@ -141,7 +145,11 @@ class AuthController extends Controller
             'email'       => $user->email,
             'roles'       => $user->getRoleNames(),
             'permissions' => $user->getAllPermissions()->pluck('name'),
-            'institution' => $user->institution?->only(['id', 'name', 'type']),
+            'institution' => $user->institution?->only([
+                'id', 'name', 'type',
+                'offers_jardin', 'offers_primario', 'primario_years',
+                'offers_secundario', 'secundario_years',
+            ]),
         ]);
     }
 

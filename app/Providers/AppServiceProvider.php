@@ -2,12 +2,16 @@
 
 namespace App\Providers;
 
+use App\Models\BirthRecord;
 use App\Models\Child;
+use App\Models\DeathRecord;
 use App\Models\EducationRecord;
 use App\Models\HealthRecord;
 use App\Models\Institution;
 use App\Models\User;
+use App\Policies\BirthRecordPolicy;
 use App\Policies\ChildPolicy;
+use App\Policies\DeathRecordPolicy;
 use App\Policies\EducationRecordPolicy;
 use App\Policies\HealthRecordPolicy;
 use App\Policies\InstitutionPolicy;
@@ -67,5 +71,10 @@ class AppServiceProvider extends ServiceProvider
 
         // Registros de salud — solo para instituciones de tipo 'salud'
         Gate::policy(HealthRecord::class, HealthRecordPolicy::class);
+
+        // Registros de nacimiento y defunción — solo admin/coordinador los ven,
+        // solo admin los crea/edita/elimina manualmente (ver policies para el detalle)
+        Gate::policy(BirthRecord::class, BirthRecordPolicy::class);
+        Gate::policy(DeathRecord::class, DeathRecordPolicy::class);
     }
 }

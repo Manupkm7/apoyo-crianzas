@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\Institution;
 use Illuminate\Foundation\Http\FormRequest;
 
 /**
@@ -21,6 +22,11 @@ class StoreHealthRecordRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // El admin no tiene institución propia — elige para qué institución de
+            // salud carga el registro (validado en withValidator). El resto de los
+            // usuarios siempre usa la suya propia, este campo se ignora.
+            'institution_id' => ['nullable', 'uuid', 'exists:institutions,id'],
+
             // Centro de salud: salita barrial, CAPS, hospital, etc.
             'health_center_name'      => ['required', 'string', 'max:200'],
 
@@ -45,5 +51,43 @@ class StoreHealthRecordRequest extends FormRequest
             'vaccines_current.required'        => 'Indicar si las vacunas están al día es obligatorio.',
             'last_checkup_date.before_or_equal'=> 'La fecha del último control no puede ser futura.',
         ];
+    }
+
+    /**
+     * Institución para la que se está creando el registro.
+     *
+     * El admin no tiene institución propia — la elige explícitamente. El resto
+     * de los usuarios siempre usa la suya.
+     */
+    public function targetInstitution(): ?Institution
+    {
+        if ($this->user()->hasRole('admin')) {
+            return Institution::find($this->input('institution_id'));
+        }
+
+        return $this->user()->institution;
+    }
+
+    /**
+     * Verifica que, si es admin, haya elegido una institución de salud válida.
+     */
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator) {
+            if (! $this->user()->hasRole('admin')) {
+                return;
+            }
+
+            $institution = $this->targetInstitution();
+
+            if (! $institution) {
+                $validator->errors()->add('institution_id', 'Elegí para qué institución de salud es este registro.');
+                return;
+            }
+
+            if ($institution->type !== 'salud') {
+                $validator->errors()->add('institution_id', 'La institución elegida no es de tipo salud.');
+            }
+        });
     }
 }

@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
@@ -32,6 +33,7 @@ class HealthRecord extends Model
         'vaccines_current',
         'last_checkup_date',
         'observations',
+        'health_profile',
         'created_by',
         'updated_by',
     ];
@@ -60,5 +62,10 @@ class HealthRecord extends Model
     public function institution(): BelongsTo
     {
         return $this->belongsTo(Institution::class);
+    }
+
+    public function observationEntries(): HasMany
+    {
+        return $this->hasMany(HealthObservation::class)->latest();
     }
 }
