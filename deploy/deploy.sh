@@ -13,7 +13,7 @@
 set -e  # Detiene el script si cualquier comando falla
 
 BACKEND_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-FRONTEND_DIR="$(cd "$BACKEND_DIR/../proyecto-crianzas-frontend" && pwd)"
+FRONTEND_DIR="$(cd "$BACKEND_DIR/../proyecto-crianzas-frontend" && pwd)"  # ajustar al nombre real de la carpeta del frontend
 
 echo "=== Deploy del Sistema de Apoyo a la Crianza ==="
 echo ""
