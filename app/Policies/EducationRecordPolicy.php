@@ -2,8 +2,8 @@
 
 namespace App\Policies;
 
+use App\Contracts\SystemActor;
 use App\Models\EducationRecord;
-use App\Models\User;
 
 /**
  * EducationRecordPolicy — Define quién puede gestionar los registros educativos.
@@ -23,7 +23,7 @@ class EducationRecordPolicy
      * - Institución de educación: sí (el controlador filtra los de su institución).
      * - Otro tipo de institución: no.
      */
-    public function viewAny(User $user): bool
+    public function viewAny(SystemActor $user): bool
     {
         if ($user->canBypassRls()) {
             return true;
@@ -38,7 +38,7 @@ class EducationRecordPolicy
      * - Admin/coordinador: sí.
      * - Institución de educación: solo el registro de su propia institución.
      */
-    public function view(User $user, EducationRecord $record): bool
+    public function view(SystemActor $user, EducationRecord $record): bool
     {
         if ($user->canBypassRls()) {
             return true;
@@ -53,7 +53,7 @@ class EducationRecordPolicy
      *
      * Solo usuarios de instituciones de tipo educacion (y admin como caso especial).
      */
-    public function create(User $user): bool
+    public function create(SystemActor $user): bool
     {
         if ($user->hasRole('admin')) {
             return true;
@@ -69,7 +69,7 @@ class EducationRecordPolicy
      *
      * Solo la institución educativa dueña del registro puede modificarlo (o el admin).
      */
-    public function update(User $user, EducationRecord $record): bool
+    public function update(SystemActor $user, EducationRecord $record): bool
     {
         if ($user->hasRole('admin')) {
             return true;
@@ -86,7 +86,7 @@ class EducationRecordPolicy
      *
      * Solo el administrador. Los datos no se eliminan físicamente.
      */
-    public function delete(User $user, EducationRecord $record): bool
+    public function delete(SystemActor $user, EducationRecord $record): bool
     {
         return $user->hasRole('admin');
     }

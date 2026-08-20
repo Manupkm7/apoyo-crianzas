@@ -10,6 +10,7 @@ use App\Models\Institution;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
+use Illuminate\Support\Str;
 
 /**
  * InstitutionController — ABM (Alta, Baja, Modificación) de instituciones.
@@ -39,6 +40,7 @@ class InstitutionController extends Controller
         $this->authorize('viewAny', Institution::class);
 
         $institutions = Institution::query()
+            ->with('locality.department.province')
             ->withCount([
                 // Cuenta solo los usuarios activos (no los desactivados ni eliminados)
                 'users' => fn ($q) => $q->where('is_active', true),
@@ -65,7 +67,8 @@ class InstitutionController extends Controller
     {
         $this->authorize('view', $institution);
 
-        // Cargamos el conteo de usuarios para el detalle
+        // Cargamos el conteo de usuarios y la cadena de jurisdicción para el detalle
+        $institution->load('locality.department.province');
         $institution->loadCount([
             'users' => fn ($q) => $q->where('is_active', true),
         ]);
@@ -86,15 +89,54 @@ class InstitutionController extends Controller
         // La autorización ya fue verificada en StoreInstitutionRequest::authorize()
         // Pero también podríamos llamar $this->authorize('create', Institution::class)
 
+        // Contraseña inicial para el login institucional (provincia → departamento →
+        // localidad → sector → institución). Se genera al azar y se devuelve UNA
+        // sola vez en esta respuesta: no queda recuperable después.
+        $plainPassword = Str::password(16);
+
         $institution = Institution::create([
             ...$request->validated(),
+            'password'              => $plainPassword,
+            'password_must_change'  => true,
             // Registramos el ID del admin que creó esta institución
             'created_by' => $request->user()->id,
         ]);
 
         return (new InstitutionResource($institution))
+            ->additional(['initial_password' => $plainPassword])
             ->response()
             ->setStatusCode(201); // 201 Created
+    }
+
+    /**
+     * Genera una nueva contraseña aleatoria para el login institucional y la
+     * devuelve en texto plano UNA sola vez (mismo criterio que la creación).
+     * Invalida los tokens de sesión institucionales vigentes.
+     */
+    public function resetPassword(Request $request, Institution $institution): JsonResponse
+    {
+        $this->authorize('update', $institution);
+
+        if (! $request->user()->can('instituciones.gestionar')) {
+            abort(403, 'Solo el administrador puede resetear la contraseña institucional.');
+        }
+
+        $plainPassword = Str::password(16);
+
+        $institution->update([
+            'password'              => $plainPassword,
+            'password_must_change'  => true,
+            'failed_login_attempts' => 0,
+            'locked_until'          => null,
+            'updated_by'            => $request->user()->id,
+        ]);
+
+        $institution->tokens()->delete();
+
+        return response()->json([
+            'message'          => 'Contraseña institucional reseteada correctamente.',
+            'initial_password' => $plainPassword,
+        ]);
     }
 
     /**

@@ -33,6 +33,7 @@ class UserResource extends JsonResource
             'id'                  => $this->id,
             'name'                => $this->name,
             'email'               => $this->email,
+            'dni'                 => $this->dni,
             'is_active'           => $this->is_active,
             'is_institution_head' => $this->is_institution_head,
 

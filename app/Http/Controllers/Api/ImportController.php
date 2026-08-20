@@ -14,11 +14,16 @@ use App\Models\EducationRecord;
 use App\Models\ImportBatch;
 use App\Models\ImportRow;
 use App\Services\Import\ImportMatchingService;
+use App\Services\Import\ImportTemplateService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\File;
 use Illuminate\Support\Facades\Storage;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
  * ImportController — gestión de importaciones masivas (Registro Civil y Educación).
@@ -84,6 +89,47 @@ class ImportController extends Controller
         return (new ImportBatchResource($batch))
             ->response()
             ->setStatusCode(202); // Accepted — procesamiento en curso
+    }
+
+    /**
+     * Descarga la plantilla de columnas esperadas para una fuente, en el formato
+     * elegido por el usuario (xlsx, csv o el TXT liviano delimitado por '|').
+     *
+     * Mismo permiso que store(): quien puede subir un archivo es quien necesita
+     * la plantilla para prepararlo.
+     */
+    public function template(Request $request, ImportTemplateService $templates): BinaryFileResponse|StreamedResponse
+    {
+        abort_unless($request->user()->can('importaciones.gestionar'), 403, 'No tiene permiso para descargar plantillas de importación.');
+
+        $data = $request->validate([
+            'source' => ['required', 'in:civil_registry,education'],
+            'format' => ['required', 'in:xlsx,csv,txt'],
+        ]);
+
+        $source = $data['source'];
+        $format = $data['format'];
+        $filename = $templates->filenameStem($source) . '.' . $format;
+
+        if ($format === 'xlsx') {
+            $dir = storage_path('app/private/exports');
+            File::ensureDirectoryExists($dir);
+            $path = $dir . DIRECTORY_SEPARATOR . $filename;
+
+            (new Xlsx($templates->buildSpreadsheet($source)))->save($path);
+
+            return response()->download($path, $filename)->deleteFileAfterSend(true);
+        }
+
+        $delimiter = $format === 'txt' ? '|' : ',';
+        $content = $templates->buildDelimited($source, $delimiter);
+        $mime = $format === 'txt' ? 'text/plain' : 'text/csv';
+
+        return response()->streamDownload(
+            fn () => print($content),
+            $filename,
+            ['Content-Type' => "{$mime}; charset=UTF-8"]
+        );
     }
 
     /**

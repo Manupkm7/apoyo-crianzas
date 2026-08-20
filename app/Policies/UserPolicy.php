@@ -2,6 +2,7 @@
 
 namespace App\Policies;
 
+use App\Contracts\SystemActor;
 use App\Models\User;
 
 /**
@@ -25,7 +26,7 @@ class UserPolicy
      * - Responsable de institución: ve solo sus representantes (el controlador filtra).
      * - Representante y demás: no tienen acceso al listado.
      */
-    public function viewAny(User $user): bool
+    public function viewAny(SystemActor $user): bool
     {
         return $user->can('usuarios.gestionar') || $user->can('representantes.gestionar');
     }
@@ -37,7 +38,7 @@ class UserPolicy
      * - Admin puede ver a cualquier usuario.
      * - Responsable de institución puede ver a sus representantes.
      */
-    public function view(User $authUser, User $targetUser): bool
+    public function view(SystemActor $authUser, User $targetUser): bool
     {
         // Todo usuario puede ver su propio perfil
         if ($authUser->id === $targetUser->id) {
@@ -65,7 +66,7 @@ class UserPolicy
      * - Responsable de institución puede crear solo representantes para su institución.
      *   (La validación del rol y la institución se hace en StoreUserRequest.)
      */
-    public function create(User $user): bool
+    public function create(SystemActor $user): bool
     {
         return $user->can('usuarios.gestionar') || $user->can('representantes.gestionar');
     }
@@ -78,7 +79,7 @@ class UserPolicy
      * - Admin puede modificar cualquier usuario.
      * - Responsable puede modificar datos de sus representantes (sin cambiarles el rol).
      */
-    public function update(User $authUser, User $targetUser): bool
+    public function update(SystemActor $authUser, User $targetUser): bool
     {
         // Cada usuario puede editar su propio perfil
         if ($authUser->id === $targetUser->id) {
@@ -108,7 +109,7 @@ class UserPolicy
      *
      * Desactivar no elimina el usuario del sistema; solo impide que pueda iniciar sesión.
      */
-    public function delete(User $authUser, User $targetUser): bool
+    public function delete(SystemActor $authUser, User $targetUser): bool
     {
         // Nadie puede desactivarse a sí mismo
         if ($authUser->id === $targetUser->id) {

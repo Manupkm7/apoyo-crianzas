@@ -101,10 +101,14 @@ class UserController extends Controller
             $this->abortIfInstitutionAlreadyHasHead($data['institution_id']);
         }
 
+        $dni = ! empty($data['dni']) ? User::normalizeDni($data['dni']) : null;
+
         $user = User::create([
             'name'                => $data['name'],
             'email'               => $data['email'],
             'password'            => $data['password'],
+            'dni'                 => $dni,
+            'dni_hash'            => $dni ? User::dniHash($dni) : null,
             'institution_id'      => $data['institution_id'] ?? null,
             'is_active'           => $data['is_active'] ?? true,
             // Solo los usuarios con rol 'institucion' son marcados como responsables
@@ -159,6 +163,14 @@ class UserController extends Controller
         // La contraseña se trata aparte porque array_filter eliminaría valores falsy
         if (isset($data['password'])) {
             $updateData['password'] = $data['password'];
+        }
+
+        // El DNI también aparte: hay que recalcular dni_hash junto con él, y
+        // array_key_exists (no isset) permite borrarlo mandando dni: null o ''.
+        if (array_key_exists('dni', $data)) {
+            $dni = ! empty($data['dni']) ? User::normalizeDni($data['dni']) : null;
+            $updateData['dni']      = $dni;
+            $updateData['dni_hash'] = $dni ? User::dniHash($dni) : null;
         }
 
         $user->update($updateData);

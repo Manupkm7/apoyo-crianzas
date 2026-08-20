@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Models\Institution;
 use App\Models\User;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -28,11 +29,17 @@ class AuthController extends Controller
     /**
      * Autentica al usuario y entrega un token de acceso.
      *
+     * Acepta el identificador como 'email' O 'dni' (exactamente uno de los
+     * dos) — el panel "Soy representante" del login institucional usa DNI en
+     * vez de email, ya que es lo que tiene sentido pedirle a personal
+     * institucional (ver InstitutionalLoginPage). El login normal
+     * (admin/coordinador) sigue mandando email.
+     *
      * Proceso:
-     * 1. Valida que se enviaron email y contraseña.
-     * 2. Busca al usuario por email.
+     * 1. Valida que se envió email o dni (no ambos, no ninguno) y contraseña.
+     * 2. Busca al usuario por email o por dni_hash, según cuál llegó.
      * 3. Verifica la contraseña (siempre, incluso si el usuario no existe,
-     *    para evitar que un atacante pueda saber si un email está registrado).
+     *    para evitar que un atacante pueda saber si un email/DNI está registrado).
      * 4. Si las credenciales son incorrectas, incrementa el contador de intentos fallidos.
      *    Al llegar a 5, la cuenta se bloquea 15 minutos.
      * 5. Si la cuenta está desactivada o bloqueada, devuelve un error claro.
@@ -41,14 +48,21 @@ class AuthController extends Controller
     public function login(Request $request): JsonResponse
     {
         $request->validate([
-            'email'    => ['required', 'email', 'max:255'],
+            'email'    => ['required_without:dni', 'nullable', 'email', 'max:255'],
+            'dni'      => ['required_without:email', 'nullable', 'string', 'max:20'],
             'password' => ['required', 'string', 'min:8', 'max:255'],
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        // El campo que devolvemos en los mensajes de error depende de cuál
+        // haya usado el frontend, para que se marque el input correcto.
+        $identifierField = $request->filled('dni') ? 'dni' : 'email';
+
+        $user = $identifierField === 'dni'
+            ? User::where('dni_hash', User::dniHash(User::normalizeDni($request->input('dni'))))->first()
+            : User::where('email', $request->input('email'))->first();
 
         // Siempre verificamos el hash aunque el usuario no exista.
-        // Esto evita que un atacante detecte emails válidos midiendo el tiempo de respuesta.
+        // Esto evita que un atacante detecte emails/DNIs válidos midiendo el tiempo de respuesta.
         $passwordValid = $user && Hash::check($request->password, $user->password);
 
         if (! $user || ! $passwordValid) {
@@ -57,19 +71,19 @@ class AuthController extends Controller
             }
 
             throw ValidationException::withMessages([
-                'email' => ['Las credenciales proporcionadas son incorrectas.'],
+                $identifierField => ['Las credenciales proporcionadas son incorrectas.'],
             ]);
         }
 
         if (! $user->is_active) {
             throw ValidationException::withMessages([
-                'email' => ['Esta cuenta se encuentra desactivada.'],
+                $identifierField => ['Esta cuenta se encuentra desactivada.'],
             ]);
         }
 
         if ($user->isLocked()) {
             throw ValidationException::withMessages([
-                'email' => ['Cuenta bloqueada temporalmente por exceso de intentos fallidos.'],
+                $identifierField => ['Cuenta bloqueada temporalmente por exceso de intentos fallidos.'],
             ]);
         }
 
@@ -130,14 +144,33 @@ class AuthController extends Controller
     }
 
     /**
-     * Devuelve el perfil completo del usuario actualmente autenticado.
+     * Devuelve el perfil completo del actor actualmente autenticado.
      *
-     * Incluye roles, permisos e institución asociada.
-     * Es el endpoint que el frontend consulta para saber qué puede mostrar/ocultar.
+     * Incluye roles, permisos e institución asociada. Es el endpoint que el
+     * frontend consulta para saber qué puede mostrar/ocultar.
+     *
+     * El actor puede ser un User (login personal) o una Institution (login
+     * institucional) — ambos comparten guard y token de Sanctum.
      */
     public function me(Request $request): JsonResponse
     {
-        $user = $request->user()->load('institution');
+        $actor = $request->user();
+
+        if ($actor instanceof Institution) {
+            return response()->json([
+                'id'          => $actor->id,
+                'name'        => $actor->name,
+                'roles'       => $actor->getRoleNames(),
+                'permissions' => $actor->getAllPermissions()->pluck('name'),
+                'institution' => $actor->only([
+                    'id', 'name', 'type',
+                    'offers_jardin', 'offers_primario', 'primario_years',
+                    'offers_secundario', 'secundario_years',
+                ]),
+            ]);
+        }
+
+        $user = $actor->load('institution');
 
         return response()->json([
             'id'          => $user->id,

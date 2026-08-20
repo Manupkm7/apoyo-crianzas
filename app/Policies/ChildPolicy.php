@@ -2,8 +2,8 @@
 
 namespace App\Policies;
 
+use App\Contracts\SystemActor;
 use App\Models\Child;
-use App\Models\User;
 
 /**
  * ChildPolicy — Define quién puede hacer qué con los registros de niños.
@@ -22,7 +22,7 @@ class ChildPolicy
      * ¿Puede este usuario ver el listado de niños?
      * Todos los roles con acceso al módulo pueden listar (el controlador filtra por institución).
      */
-    public function viewAny(User $user): bool
+    public function viewAny(SystemActor $user): bool
     {
         return $user->can('ninos.gestionar') || $user->can('reportes.ver');
     }
@@ -33,7 +33,7 @@ class ChildPolicy
      * - Admin/coordinador: sí, siempre.
      * - Institución/representante: solo si el niño tiene un registro en su institución.
      */
-    public function view(User $user, Child $child): bool
+    public function view(SystemActor $user, Child $child): bool
     {
         if ($user->canBypassRls()) {
             return true;
@@ -49,7 +49,7 @@ class ChildPolicy
      *
      * Admin, coordinador y usuarios institucionales pueden crear niños.
      */
-    public function create(User $user): bool
+    public function create(SystemActor $user): bool
     {
         return $user->can('ninos.gestionar') || $user->can('reportes.ver');
     }
@@ -59,7 +59,7 @@ class ChildPolicy
      *
      * Admin/coordinador: sí. Institucionales: solo si el niño está en su institución.
      */
-    public function update(User $user, Child $child): bool
+    public function update(SystemActor $user, Child $child): bool
     {
         if ($user->canBypassRls()) {
             return true;
@@ -76,7 +76,7 @@ class ChildPolicy
      *
      * Solo el administrador puede hacer esto. Los datos nunca se eliminan físicamente.
      */
-    public function delete(User $user, Child $child): bool
+    public function delete(SystemActor $user, Child $child): bool
     {
         return $user->hasRole('admin');
     }

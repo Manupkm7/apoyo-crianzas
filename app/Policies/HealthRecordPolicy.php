@@ -2,8 +2,8 @@
 
 namespace App\Policies;
 
+use App\Contracts\SystemActor;
 use App\Models\HealthRecord;
-use App\Models\User;
 
 /**
  * HealthRecordPolicy — Define quién puede gestionar los registros de salud.
@@ -23,7 +23,7 @@ class HealthRecordPolicy
      * - Institución de salud: sí (el controlador filtra los de su institución).
      * - Otro tipo de institución: no.
      */
-    public function viewAny(User $user): bool
+    public function viewAny(SystemActor $user): bool
     {
         if ($user->canBypassRls()) {
             return true;
@@ -38,7 +38,7 @@ class HealthRecordPolicy
      * - Admin/coordinador: sí.
      * - Institución de salud: solo el registro de su propia institución.
      */
-    public function view(User $user, HealthRecord $record): bool
+    public function view(SystemActor $user, HealthRecord $record): bool
     {
         if ($user->canBypassRls()) {
             return true;
@@ -53,7 +53,7 @@ class HealthRecordPolicy
      *
      * Solo usuarios de instituciones de tipo salud (y admin como caso especial).
      */
-    public function create(User $user): bool
+    public function create(SystemActor $user): bool
     {
         if ($user->hasRole('admin')) {
             return true;
@@ -69,7 +69,7 @@ class HealthRecordPolicy
      *
      * Solo la institución de salud dueña del registro puede modificarlo (o el admin).
      */
-    public function update(User $user, HealthRecord $record): bool
+    public function update(SystemActor $user, HealthRecord $record): bool
     {
         if ($user->hasRole('admin')) {
             return true;
@@ -86,7 +86,7 @@ class HealthRecordPolicy
      *
      * Solo el administrador. Los datos no se eliminan físicamente.
      */
-    public function delete(User $user, HealthRecord $record): bool
+    public function delete(SystemActor $user, HealthRecord $record): bool
     {
         return $user->hasRole('admin');
     }

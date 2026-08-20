@@ -8,13 +8,17 @@ use App\Http\Controllers\Api\DeathRecordController;
 use App\Http\Controllers\Api\EducationDashboardController;
 use App\Http\Controllers\Api\EducationObservationController;
 use App\Http\Controllers\Api\EducationRecordController;
+use App\Http\Controllers\Api\GeoController;
 use App\Http\Controllers\Api\HealthObservationController;
 use App\Http\Controllers\Api\HealthRecordController;
 use App\Http\Controllers\Api\ImportController;
+use App\Http\Controllers\Api\InstitutionAuthController;
 use App\Http\Controllers\Api\InstitutionController;
+use App\Http\Controllers\Api\InstitutionDirectoryController;
 use App\Http\Controllers\Api\PermissionController;
 use App\Http\Controllers\Api\RoleController;
 use App\Http\Controllers\Api\UserController;
+use App\Http\Controllers\Api\UserImportController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -36,14 +40,34 @@ Route::prefix('v1')->group(function () {
     // -------------------------------------------------------------------------
     Route::middleware('throttle:10,1')->group(function () {
         Route::post('login', [AuthController::class, 'login']);
+
+        // Login institucional: provincia → departamento → localidad → sector →
+        // institución → contraseña. No reemplaza el login de arriba, es un
+        // segundo camino de acceso (o el usuario elige loguearse como
+        // representante con su cuenta personal, vía /login).
+        Route::post('institution-login', [InstitutionAuthController::class, 'login']);
     });
+
+    // -------------------------------------------------------------------------
+    // Catálogo geográfico y desplegable de instituciones — públicos, solo
+    // lectura, throttle más laxo porque no exponen datos sensibles ni
+    // permiten intentos de credenciales.
+    // -------------------------------------------------------------------------
+    Route::middleware('throttle:30,1')->prefix('geo')->group(function () {
+        Route::get('provinces', [GeoController::class, 'provinces']);
+        Route::get('provinces/{province}/departments', [GeoController::class, 'departments']);
+        Route::get('departments/{department}/localities', [GeoController::class, 'localities']);
+        Route::get('sectors', [GeoController::class, 'sectors']);
+    });
+
+    Route::middleware('throttle:30,1')->get('institutions/directory', [InstitutionDirectoryController::class, 'index']);
 
     // -------------------------------------------------------------------------
     // Endpoints autenticados — requieren token de Sanctum válido
     // -------------------------------------------------------------------------
     Route::middleware('auth:sanctum')->group(function () {
 
-        // Sesión del usuario actual
+        // Sesión del actor actual (User o Institution, ver AuthController::me)
         Route::post('logout', [AuthController::class, 'logout']);
         Route::get('me', [AuthController::class, 'me'])->name('me');
 
@@ -54,8 +78,10 @@ Route::prefix('v1')->group(function () {
         // - GET    /api/v1/institutions/{id}    → ver institución
         // - PATCH  /api/v1/institutions/{id}    → modificar institución [solo admin]
         // - DELETE /api/v1/institutions/{id}    → desactivar institución [solo admin]
+        // - POST   /api/v1/institutions/{id}/reset-password → nueva password institucional [solo admin]
         // -----------------------------------------------------------------------
         Route::apiResource('institutions', InstitutionController::class);
+        Route::post('institutions/{institution}/reset-password', [InstitutionController::class, 'resetPassword']);
 
         // -----------------------------------------------------------------------
         // ABM de Usuarios
@@ -126,7 +152,8 @@ Route::prefix('v1')->group(function () {
         // -----------------------------------------------------------------------
         // Importaciones masivas (Registro Civil y Educación)
         // - GET    /api/v1/imports                                 → listar batches
-        // - POST   /api/v1/imports                                 → subir archivo [solo admin]
+        // - POST   /api/v1/imports                                 → subir archivo (CSV, TXT o Excel) [solo admin]
+        // - GET    /api/v1/imports/template?source=&format=        → descargar plantilla (xlsx|csv|txt) [solo admin]
         // - GET    /api/v1/imports/{batch}                         → detalle de batch
         // - GET    /api/v1/imports/{batch}/rows                    → filas (?status=partial_match|no_match|...)
         // - PATCH  /api/v1/imports/{batch}/rows/{row}/resolve      → resolver fila [solo admin]
@@ -134,9 +161,29 @@ Route::prefix('v1')->group(function () {
         Route::prefix('imports')->group(function () {
             Route::get('/',                                [ImportController::class, 'index']);
             Route::post('/',                               [ImportController::class, 'store']);
+            Route::get('/template',                        [ImportController::class, 'template']);
             Route::get('/{batch}',                         [ImportController::class, 'show']);
             Route::get('/{batch}/rows',                    [ImportController::class, 'rows']);
             Route::patch('/{batch}/rows/{row}/resolve',    [ImportController::class, 'resolveRow']);
+        });
+
+        // -----------------------------------------------------------------------
+        // Carga masiva de usuarios institucionales (rol institución o representante)
+        // - GET    /api/v1/user-imports                                → listar batches
+        // - POST   /api/v1/user-imports                                → subir archivo (CSV, TXT o Excel)
+        // - GET    /api/v1/user-imports/template?format=               → descargar plantilla (xlsx|csv|txt)
+        // - GET    /api/v1/user-imports/{batch}                        → detalle de batch
+        // - GET    /api/v1/user-imports/{batch}/rows                   → filas (?status=needs_review|created|...)
+        // - PATCH  /api/v1/user-imports/{batch}/rows/{row}/resolve     → resolver fila (confirm|skip)
+        // Acceso: admin (cualquier institución) o responsable de institución (solo la propia)
+        // -----------------------------------------------------------------------
+        Route::prefix('user-imports')->group(function () {
+            Route::get('/',                                [UserImportController::class, 'index']);
+            Route::post('/',                               [UserImportController::class, 'store']);
+            Route::get('/template',                        [UserImportController::class, 'template']);
+            Route::get('/{batch}',                         [UserImportController::class, 'show']);
+            Route::get('/{batch}/rows',                    [UserImportController::class, 'rows']);
+            Route::patch('/{batch}/rows/{row}/resolve',    [UserImportController::class, 'resolveRow']);
         });
 
         // -----------------------------------------------------------------------

@@ -2,8 +2,8 @@
 
 namespace App\Policies;
 
+use App\Contracts\SystemActor;
 use App\Models\DeathRecord;
-use App\Models\User;
 
 /**
  * DeathRecordPolicy — Define quién puede gestionar los registros de defunción.
@@ -17,27 +17,27 @@ use App\Models\User;
  */
 class DeathRecordPolicy
 {
-    public function viewAny(User $user): bool
+    public function viewAny(SystemActor $user): bool
     {
         return $user->canBypassRls();
     }
 
-    public function view(User $user, DeathRecord $record): bool
+    public function view(SystemActor $user, DeathRecord $record): bool
     {
         return $user->canBypassRls();
     }
 
-    public function create(User $user): bool
+    public function create(SystemActor $user): bool
     {
         return $user->hasRole('admin');
     }
 
-    public function update(User $user, DeathRecord $record): bool
+    public function update(SystemActor $user, DeathRecord $record): bool
     {
         return $user->hasRole('admin');
     }
 
-    public function delete(User $user, DeathRecord $record): bool
+    public function delete(SystemActor $user, DeathRecord $record): bool
     {
         return $user->hasRole('admin');
     }

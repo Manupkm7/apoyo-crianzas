@@ -31,6 +31,24 @@ class InstitutionResource extends JsonResource
             'type_label'  => $this->typeLabel(),
             'address'     => $this->address,
             'phone'       => $this->phone,
+            'locality_id' => $this->locality_id,
+            // Cadena completa de jurisdicción — se expone aplanada (no anidada) para
+            // que el frontend pueda precargar los 3 desplegables en cascada del
+            // formulario sin tener que resolver la cadena locality->department->province.
+            'locality'    => $this->whenLoaded('locality', fn () => $this->locality ? [
+                'id'   => $this->locality->id,
+                'name' => $this->locality->name,
+            ] : null),
+            'department'  => $this->whenLoaded('locality', fn () => $this->locality?->relationLoaded('department') && $this->locality->department ? [
+                'id'   => $this->locality->department->id,
+                'name' => $this->locality->department->name,
+            ] : null),
+            'province'    => $this->whenLoaded('locality', fn () => $this->locality?->relationLoaded('department')
+                && $this->locality->department?->relationLoaded('province')
+                && $this->locality->department->province ? [
+                'id'   => $this->locality->department->province->id,
+                'name' => $this->locality->department->province->name,
+            ] : null),
             'is_active'   => $this->is_active,
 
             // Configuración de niveles educativos — solo relevante cuando type === 'educacion'

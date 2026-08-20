@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\User;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
@@ -49,6 +50,31 @@ class UpdateUserRequest extends FormRequest
                 'sometimes',
                 'string',
                 Password::min(12)->mixedCase()->numbers()->symbols(),
+            ],
+            // DNI — con el que se inicia sesión (ver AuthController::login).
+            // Siempre 8 dígitos; unicidad validada a mano contra dni_hash, no
+            // contra la columna cifrada dni (ver StoreUserRequest para el detalle).
+            'dni' => [
+                'sometimes',
+                'nullable',
+                'string',
+                function ($attribute, $value, $fail) use ($targetUser) {
+                    if ($value === null || $value === '') {
+                        return;
+                    }
+                    $normalized = User::normalizeDni((string) $value);
+                    if (strlen($normalized) !== 8) {
+                        $fail('El DNI debe tener 8 dígitos.');
+                        return;
+                    }
+                    $exists = User::where('dni_hash', User::dniHash($normalized))
+                        ->where('id', '!=', $targetUser?->id)
+                        ->whereNull('deleted_at')
+                        ->exists();
+                    if ($exists) {
+                        $fail('Ya existe otro usuario con ese DNI.');
+                    }
+                },
             ],
         ];
 

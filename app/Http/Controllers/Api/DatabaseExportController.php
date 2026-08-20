@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Models\BirthRecord;
 use App\Models\Child;
+use App\Models\Department;
 use App\Models\DeathRecord;
 use App\Models\EducationObservation;
 use App\Models\EducationRecord;
@@ -12,6 +13,8 @@ use App\Models\HealthRecord;
 use App\Models\ImportBatch;
 use App\Models\ImportRow;
 use App\Models\Institution;
+use App\Models\Locality;
+use App\Models\Province;
 use App\Models\User;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
@@ -49,6 +52,12 @@ class DatabaseExportController extends Controller
     {
         abort_unless($request->user()->hasRole('admin'), 403, 'Solo el administrador puede exportar la base de datos.');
 
+        $request->validate([
+            'province_id'   => ['nullable', 'uuid', 'exists:provinces,id'],
+            'department_id' => ['nullable', 'uuid', 'exists:departments,id'],
+            'locality_id'   => ['nullable', 'uuid', 'exists:localities,id'],
+        ]);
+
         $dir = storage_path('app/private/exports');
         File::ensureDirectoryExists($dir);
 
@@ -56,13 +65,18 @@ class DatabaseExportController extends Controller
         $xlsxPath = $dir.DIRECTORY_SEPARATOR."datos_{$stamp}.xlsx";
         $zipPath  = $dir.DIRECTORY_SEPARATOR."export_{$stamp}.zip";
 
-        (new Xlsx($this->buildSpreadsheet()))->save($xlsxPath);
+        // null = sin filtro (exporta todo, comportamiento por defecto). Array
+        // (incluso vacío) = restringido a las instituciones de esa jurisdicción.
+        $institutionIds = $this->resolveJurisdictionInstitutionIds($request);
+        $childIds = $this->resolveChildIdsForInstitutions($institutionIds);
+
+        (new Xlsx($this->buildSpreadsheet($institutionIds, $childIds)))->save($xlsxPath);
 
         $zip = new ZipArchive();
         $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
         $zip->addFile($xlsxPath, 'datos.xlsx');
-        $this->addAttachments($zip);
-        $zip->addFromString('LEEME.txt', $this->manifest($request));
+        $this->addAttachments($zip, $institutionIds);
+        $zip->addFromString('LEEME.txt', $this->manifest($request, $institutionIds));
         $zip->close();
 
         @unlink($xlsxPath);
@@ -75,28 +89,89 @@ class DatabaseExportController extends Controller
     }
 
     /**
+     * Resuelve a qué instituciones restringir el export según la jurisdicción
+     * elegida (provincia, departamento o localidad — la más específica manda).
+     * null = sin filtro, exporta todo (comportamiento por defecto).
+     */
+    private function resolveJurisdictionInstitutionIds(Request $request): ?array
+    {
+        if (! $request->filled('locality_id') && ! $request->filled('department_id') && ! $request->filled('province_id')) {
+            return null;
+        }
+
+        return Institution::query()
+            ->when(
+                $request->filled('locality_id'),
+                fn ($q) => $q->where('locality_id', $request->query('locality_id')),
+                fn ($q) => $q
+                    ->when(
+                        $request->filled('department_id'),
+                        fn ($q2) => $q2->whereHas('locality', fn ($q3) => $q3->where('department_id', $request->query('department_id'))),
+                        fn ($q2) => $q2->whereHas('locality.department', fn ($q3) => $q3->where('province_id', $request->query('province_id')))
+                    )
+            )
+            ->pluck('id')
+            ->all();
+    }
+
+    /**
+     * Niños con algún registro (educativo, de salud, nacimiento o defunción)
+     * en una de las instituciones filtradas. null = sin filtro de jurisdicción.
+     */
+    private function resolveChildIdsForInstitutions(?array $institutionIds): ?array
+    {
+        if ($institutionIds === null) {
+            return null;
+        }
+
+        if ($institutionIds === []) {
+            return [];
+        }
+
+        return Child::query()
+            ->where(function ($q) use ($institutionIds) {
+                $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+                    ->orWhereHas('healthRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+                    ->orWhereHas('birthRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+                    ->orWhereHas('deathRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds));
+            })
+            ->pluck('id')
+            ->all();
+    }
+
+    /**
      * Arma el Excel completo: una hoja por tabla de datos de negocio, con
      * encabezados en español y relaciones ya resueltas a nombres legibles
      * (nunca UUIDs sueltos) para que lo pueda leer cualquier usuario final.
+     *
+     * $institutionIds / $childIds: null = sin filtro (todo el sistema).
+     * Array (incluso vacío) = restringido a la jurisdicción elegida.
      */
-    private function buildSpreadsheet(): Spreadsheet
+    private function buildSpreadsheet(?array $institutionIds, ?array $childIds): Spreadsheet
     {
         $spreadsheet = new Spreadsheet();
         $index = 0;
 
-        $institutions = Institution::withTrashed()->orderBy('name')->get();
+        $institutions = Institution::withTrashed()
+            ->with('locality.department.province')
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('id', $institutionIds))
+            ->orderBy('name')->get();
         $this->addSheet($spreadsheet, $index++, 'Instituciones', [
-            'ID', 'Nombre', 'Tipo', 'Dirección', 'Teléfono', 'Activa',
+            'ID', 'Nombre', 'Tipo', 'Provincia', 'Departamento', 'Localidad', 'Dirección', 'Teléfono', 'Activa',
             'Ofrece jardín', 'Ofrece primario', 'Años primario', 'Ofrece secundario', 'Años secundario',
             'Creada', 'Actualizada', 'Eliminada',
         ], $institutions->map(fn (Institution $i) => [
-            $i->id, $i->name, $this->institutionTypeLabel($i->type), $i->address, $i->phone, $this->bool($i->is_active),
+            $i->id, $i->name, $this->institutionTypeLabel($i->type),
+            $i->locality?->department?->province?->name, $i->locality?->department?->name, $i->locality?->name,
+            $i->address, $i->phone, $this->bool($i->is_active),
             $this->bool($i->offers_jardin), $this->bool($i->offers_primario), $i->primario_years,
             $this->bool($i->offers_secundario), $i->secundario_years,
             $this->dt($i->created_at), $this->dt($i->updated_at), $this->dt($i->deleted_at),
         ])->all());
 
-        $users = User::withTrashed()->with('institution')->orderBy('name')->get();
+        $users = User::withTrashed()->with('institution')
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+            ->orderBy('name')->get();
         $this->addSheet($spreadsheet, $index++, 'Usuarios', [
             'ID', 'Nombre', 'Email', 'Institución', 'Roles', 'Activo', 'Responsable de institución',
             'Creado', 'Actualizado', 'Eliminado',
@@ -106,7 +181,9 @@ class DatabaseExportController extends Controller
             $this->dt($u->created_at), $this->dt($u->updated_at), $this->dt($u->deleted_at),
         ])->all());
 
-        $children = Child::withTrashed()->orderBy('last_name')->get();
+        $children = Child::withTrashed()
+            ->when($childIds !== null, fn ($q) => $q->whereIn('id', $childIds))
+            ->orderBy('last_name')->get();
         $this->addSheet($spreadsheet, $index++, 'Niños', [
             'ID', 'Nombre', 'Apellido', 'Fecha de nacimiento', 'Edad', 'DNI', 'Notas',
             'Creado', 'Actualizado', 'Eliminado',
@@ -115,7 +192,9 @@ class DatabaseExportController extends Controller
             $this->dt($c->created_at), $this->dt($c->updated_at), $this->dt($c->deleted_at),
         ])->all());
 
-        $educationRecords = EducationRecord::withTrashed()->with(['institution', 'child'])->get();
+        $educationRecords = EducationRecord::withTrashed()->with(['institution', 'child'])
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+            ->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. educativos', [
             'ID', 'Niño', 'Institución', 'Escuela', 'Nivel', 'Grado', 'Grado/año (texto libre)',
             'Inasistencias', 'Días asistidos', 'Días totales', 'Período', 'Escolarizado', 'Observaciones',
@@ -131,6 +210,10 @@ class DatabaseExportController extends Controller
 
         $observations = EducationObservation::withTrashed()
             ->with(['author', 'educationRecord.child', 'educationRecord.institution'])
+            ->when(
+                $institutionIds !== null,
+                fn ($q) => $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+            )
             ->get();
         $this->addSheet($spreadsheet, $index++, 'Observaciones educ.', [
             'ID', 'Niño', 'Institución', 'Autor', 'Observación', 'Adjunto', 'Creado', 'Eliminado',
@@ -140,7 +223,9 @@ class DatabaseExportController extends Controller
             $this->dt($o->created_at), $this->dt($o->deleted_at),
         ])->all());
 
-        $healthRecords = HealthRecord::withTrashed()->with(['institution', 'child'])->get();
+        $healthRecords = HealthRecord::withTrashed()->with(['institution', 'child'])
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+            ->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. de salud', [
             'ID', 'Niño', 'Institución', 'Centro de salud', 'Control niño sano al día', 'Vacunas al día',
             'Último control', 'Observaciones', 'Creado', 'Actualizado', 'Eliminado',
@@ -151,7 +236,9 @@ class DatabaseExportController extends Controller
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
 
-        $birthRecords = BirthRecord::withTrashed()->with(['institution', 'child'])->get();
+        $birthRecords = BirthRecord::withTrashed()->with(['institution', 'child'])
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+            ->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. de nacimiento', [
             'ID', 'Nombre', 'Apellido', 'Niño vinculado', 'Fecha de nacimiento', 'Institución',
             'Nombre de la madre', 'DNI de la madre', 'Nombre del padre', 'DNI del padre',
@@ -163,7 +250,9 @@ class DatabaseExportController extends Controller
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
 
-        $deathRecords = DeathRecord::withTrashed()->with(['institution', 'child'])->get();
+        $deathRecords = DeathRecord::withTrashed()->with(['institution', 'child'])
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+            ->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. de defunción', [
             'ID', 'Nombre', 'Apellido', 'Niño vinculado', 'Fecha de nacimiento', 'Fecha de defunción',
             'Institución', 'DNI del niño', 'DNI de la madre', 'Causa de defunción', 'Observaciones',
@@ -175,7 +264,9 @@ class DatabaseExportController extends Controller
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
 
-        $importBatches = ImportBatch::with(['institution', 'uploader'])->orderByDesc('created_at')->get();
+        $importBatches = ImportBatch::with(['institution', 'uploader'])
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+            ->orderByDesc('created_at')->get();
         $this->addSheet($spreadsheet, $index++, 'Importaciones', [
             'ID', 'Origen', 'Institución', 'Estado', 'Archivo', 'Total filas', 'Procesadas',
             'Coincidencias', 'Parciales', 'Sin coincidencia', 'Errores', 'Subido por',
@@ -187,7 +278,12 @@ class DatabaseExportController extends Controller
             $b->error_message,
         ])->all());
 
-        $importRows = ImportRow::with(['batch', 'child', 'resolver'])->orderByDesc('created_at')->get();
+        $importRows = ImportRow::with(['batch', 'child', 'resolver'])
+            ->when(
+                $institutionIds !== null,
+                fn ($q) => $q->whereHas('batch', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+            )
+            ->orderByDesc('created_at')->get();
         $this->addSheet($spreadsheet, $index++, 'Filas de importación', [
             'ID', 'Lote', 'Estado', 'Nombre normalizado', 'Fecha de nacimiento', 'Confianza de coincidencia',
             'Notas de coincidencia', 'Niño vinculado', 'Resuelto por', 'Resuelto', 'Mensaje de error', 'Línea',
@@ -210,6 +306,7 @@ class DatabaseExportController extends Controller
             ->join('roles', 'roles.id', '=', 'model_has_roles.role_id')
             ->join('users', 'users.id', '=', 'model_has_roles.model_uuid')
             ->where('model_has_roles.model_type', User::class)
+            ->when($institutionIds !== null, fn ($q) => $q->whereIn('users.institution_id', $institutionIds))
             ->select('users.email', 'roles.name as role')
             ->get();
         $this->addSheet($spreadsheet, $index++, 'Roles asignados', ['Usuario', 'Rol'], $roleAssignments
@@ -253,10 +350,14 @@ class DatabaseExportController extends Controller
      * Copia los PDF adjuntos de las observaciones educativas dentro del ZIP,
      * con su nombre original, para que sean legibles fuera del sistema.
      */
-    private function addAttachments(ZipArchive $zip): void
+    private function addAttachments(ZipArchive $zip, ?array $institutionIds): void
     {
         $observations = EducationObservation::withTrashed()
             ->whereNotNull('attachment_path')
+            ->when(
+                $institutionIds !== null,
+                fn ($q) => $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+            )
             ->get();
 
         foreach ($observations as $observation) {
@@ -305,12 +406,32 @@ class DatabaseExportController extends Controller
         return $value?->format('d/m/Y');
     }
 
-    private function manifest(Request $request): string
+    private function jurisdictionLabel(Request $request): string
+    {
+        if ($request->filled('locality_id')) {
+            return Locality::find($request->query('locality_id'))?->name ?? '—';
+        }
+
+        if ($request->filled('department_id')) {
+            return Department::find($request->query('department_id'))?->name ?? '—';
+        }
+
+        return Province::find($request->query('province_id'))?->name ?? '—';
+    }
+
+    private function manifest(Request $request, ?array $institutionIds): string
     {
         return implode("\n", [
-            'Exportación completa — Sistema de Apoyo a la Crianza',
+            $institutionIds === null
+                ? 'Exportación completa — Sistema de Apoyo a la Crianza'
+                : 'Exportación filtrada por jurisdicción — Sistema de Apoyo a la Crianza',
             'Generada: '.now()->toDateTimeString(),
             'Generada por: '.$request->user()->name.' ('.$request->user()->email.')',
+            ...($institutionIds !== null ? [
+                '',
+                'Jurisdicción: '.$this->jurisdictionLabel($request),
+                'Instituciones incluidas: '.count($institutionIds),
+            ] : []),
             '',
             'datos.xlsx contiene una hoja por tabla: instituciones, usuarios, niños,',
             'registros educativos y de salud, observaciones educativas, registros de',

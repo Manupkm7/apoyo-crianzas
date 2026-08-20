@@ -47,6 +47,11 @@ class StoreInstitutionRequest extends FormRequest
                 Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro']),
             ],
 
+            // Localidad — obligatoria para instituciones nuevas (catálogo geográfico
+            // del login institucional). Las instituciones creadas antes de este catálogo
+            // quedan con locality_id null hasta completarse a mano.
+            'locality_id' => ['required', 'uuid', 'exists:localities,id'],
+
             // Domicilio — opcional
             'address' => ['nullable', 'string', 'max:500'],
 
@@ -74,6 +79,8 @@ class StoreInstitutionRequest extends FormRequest
             'name.required'  => 'El nombre de la institución es obligatorio.',
             'name.unique'    => 'Ya existe una institución con ese nombre.',
             'type.required'  => 'El tipo de institución es obligatorio.',
+            'locality_id.required' => 'La localidad de la institución es obligatoria.',
+            'locality_id.exists'   => 'La localidad seleccionada no existe.',
             'type.in'        => 'El tipo debe ser: salud, educacion, desarrollo_social, justicia u otro.',
             'primario_years.required_if'   => 'Indicá la cantidad de años de primario (6 o 7).',
             'secundario_years.required_if' => 'Indicá la cantidad de años de secundario (6 o 7).',

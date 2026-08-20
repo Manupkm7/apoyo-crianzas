@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Models\User;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 use Illuminate\Validation\Rules\Password;
@@ -64,6 +65,31 @@ class StoreUserRequest extends FormRequest
 
             // Rol a asignar — restringido según quién crea el usuario
             'role' => ['required', 'string', Rule::in($allowedRoles)],
+
+            // DNI — obligatorio para institución/representante (es el identificador
+            // con el que van a iniciar sesión, ver AuthController::login). Siempre
+            // 8 dígitos. Se valida unicidad a mano porque lo que se compara es el
+            // hash (dni_hash), no la columna cifrada dni.
+            'dni' => [
+                $this->isRoleRequiringInstitution() ? 'required' : 'nullable',
+                'string',
+                function ($attribute, $value, $fail) {
+                    if ($value === null || $value === '') {
+                        return;
+                    }
+                    $normalized = User::normalizeDni((string) $value);
+                    if (strlen($normalized) !== 8) {
+                        $fail('El DNI debe tener 8 dígitos.');
+                        return;
+                    }
+                    $exists = User::where('dni_hash', User::dniHash($normalized))
+                        ->whereNull('deleted_at')
+                        ->exists();
+                    if ($exists) {
+                        $fail('Ya existe un usuario con ese DNI.');
+                    }
+                },
+            ],
 
             // Institución a la que pertenecerá el usuario
             // Para admin/coordinador puede ser null; para inst/representante es obligatorio

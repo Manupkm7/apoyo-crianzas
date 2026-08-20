@@ -1,0 +1,24 @@
+<?php
+
+use Illuminate\Database\Migrations\Migration;
+use Illuminate\Database\Schema\Blueprint;
+use Illuminate\Support\Facades\Schema;
+
+return new class extends Migration
+{
+    public function up(): void
+    {
+        Schema::create('provinces', function (Blueprint $table) {
+            $table->uuid('id')->primary();
+            // Código externo (ej. INDEC) usado para sincronizar contra la fuente de datos real.
+            $table->string('external_code')->nullable()->unique();
+            $table->string('name');
+            $table->timestamps();
+        });
+    }
+
+    public function down(): void
+    {
+        Schema::dropIfExists('provinces');
+    }
+};

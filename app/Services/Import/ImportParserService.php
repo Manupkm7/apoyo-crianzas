@@ -6,7 +6,11 @@ use Illuminate\Http\UploadedFile;
 use Illuminate\Support\Carbon;
 
 /**
- * Parsea archivos CSV y XLSX de importación y los convierte a arrays normalizados.
+ * Parsea archivos CSV, TXT y XLSX de importación y los convierte a arrays normalizados.
+ *
+ * El TXT es un formato liviano delimitado por '|' (misma cabecera + filas que un
+ * CSV, pero sin comillas/escapes) pensado para exportarse fácil desde sistemas
+ * externos; se resuelve con el mismo parser de CSV detectando el delimitador.
  *
  * Cada fuente (registro civil, educación) tiene un mapa de variantes de nombres
  * de columna para tolerar las distintas nomenclaturas que pueden usar los organismos.
@@ -15,8 +19,7 @@ use Illuminate\Support\Carbon;
  * Retorna un generator (yield) para no cargar todo el archivo en memoria:
  * útil para archivos grandes de miles de registros.
  *
- * Dependencia: maatwebsite/excel (wraps PhpSpreadsheet).
- * Instalar con: composer require maatwebsite/excel
+ * Dependencia: phpoffice/phpspreadsheet, ya requerido por el proyecto.
  */
 class ImportParserService
 {
@@ -53,6 +56,21 @@ class ImportParserService
         ],
     ];
 
+    private const USER_COLUMNS = [
+        'first_name' => [
+            'id_nombre', 'nombre', 'nombres', 'primer nombre', 'primer_nombre', 'first_name',
+        ],
+        'last_name' => [
+            'id_apellido', 'apellido', 'apellidos', 'last_name',
+        ],
+        'dni' => [
+            'id_dni', 'dni', 'documento', 'documento identidad', 'documento_identidad', 'doc',
+        ],
+        'role' => [
+            'rol', 'role', 'tipo', 'tipo de usuario', 'tipo_de_usuario', 'tipo usuario',
+        ],
+    ];
+
     private const EDUCATION_COLUMNS = [
         'first_name' => [
             'nombre', 'nombres', 'primer nombre', 'primer_nombre', 'first_name', 'nombre del alumno', 'nombre alumno',
@@ -80,22 +98,24 @@ class ImportParserService
      * Parsea el archivo y retorna un iterador de filas ya mapeadas a campos internos.
      *
      * @param UploadedFile $file
-     * @param string $source  'civil_registry' | 'education'
+     * @param string $source  'civil_registry' | 'education' | 'users'
      * @return \Generator<int, array>  índice de línea (base 1) => datos mapeados
      * @throws \RuntimeException si el archivo no puede leerse o no tiene cabeceras reconocidas
      */
     public function parse(UploadedFile $file, string $source): \Generator
     {
-        $columnMap = $source === 'civil_registry'
-            ? self::CIVIL_REGISTRY_COLUMNS
-            : self::EDUCATION_COLUMNS;
+        $columnMap = match ($source) {
+            'civil_registry' => self::CIVIL_REGISTRY_COLUMNS,
+            'users'          => self::USER_COLUMNS,
+            default          => self::EDUCATION_COLUMNS,
+        };
 
         $extension = strtolower($file->getClientOriginalExtension());
 
         return match ($extension) {
-            'csv'         => $this->parseCsv($file->getRealPath(), $columnMap),
+            'csv', 'txt'  => $this->parseCsv($file->getRealPath(), $columnMap),
             'xlsx', 'xls' => $this->parseExcel($file->getRealPath(), $columnMap),
-            default       => throw new \RuntimeException("Formato de archivo no soportado: {$extension}. Use CSV o XLSX."),
+            default       => throw new \RuntimeException("Formato de archivo no soportado: {$extension}. Use CSV, TXT o Excel."),
         };
     }
 
@@ -266,8 +286,15 @@ class ImportParserService
             return ',';
         }
 
-        $commas     = substr_count($firstLine, ',');
-        $semicolons = substr_count($firstLine, ';');
-        return $semicolons > $commas ? ';' : ',';
+        // El .txt liviano usa '|' como delimitador; CSV usa ',' o ';' según el
+        // exportador. Se elige el que más aparece en la cabecera.
+        $counts = [
+            ','  => substr_count($firstLine, ','),
+            ';'  => substr_count($firstLine, ';'),
+            '|'  => substr_count($firstLine, '|'),
+        ];
+        arsort($counts);
+        $delimiter = array_key_first($counts);
+        return $counts[$delimiter] > 0 ? $delimiter : ',';
     }
 }

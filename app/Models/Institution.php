@@ -2,13 +2,19 @@
 
 namespace App\Models;
 
+use App\Contracts\SystemActor;
+use App\Models\Concerns\HasInstitutionalRoleChecks;
+use App\Models\Concerns\HasLoginLockout;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
-use Illuminate\Database\Eloquent\Model;
+use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
+use Illuminate\Foundation\Auth\User as Authenticatable;
+use Laravel\Sanctum\HasApiTokens;
 use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
+use Spatie\Permission\Traits\HasRoles;
 
 /*
  * Institución municipal del sistema.
@@ -17,11 +23,20 @@ use Spatie\Activitylog\Models\Concerns\LogsActivity;
  * que determina qué módulos de datos podrán usar sus usuarios.
  * Los cambios en nombre, tipo y estado activo quedan registrados automáticamente
  * en el historial de auditoría.
+ *
+ * Desde el login institucional (provincia → departamento → localidad → sector
+ * → institución), la Institution es autenticable por sí misma con su propia
+ * contraseña, además de que sus User (representantes, cabeza de institución)
+ * sigan logueando individualmente como siempre. Extiende el mismo
+ * Authenticatable genérico de Laravel que usa User — no depende de él.
  */
 
-class Institution extends Model
+class Institution extends Authenticatable implements SystemActor
 {
-    use HasFactory, HasUuids, LogsActivity, SoftDeletes;
+    use HasApiTokens, HasFactory, HasInstitutionalRoleChecks, HasLoginLockout, HasRoles, HasUuids, LogsActivity, SoftDeletes;
+
+    // Spatie Permission necesita saber que este modelo usa el guard 'sanctum'.
+    protected $guard_name = 'sanctum';
 
     // Sala máxima fija de jardín maternal e infantil (no varía por institución).
     public const JARDIN_MAX_GRADE = 5;
@@ -31,6 +46,7 @@ class Institution extends Model
         'type',
         'address',
         'phone',
+        'locality_id',
         'is_active',
         'offers_jardin',
         'offers_primario',
@@ -41,6 +57,22 @@ class Institution extends Model
         'updated_by',
     ];
 
+    protected $hidden = [
+        'password',
+        'failed_login_attempts',
+        'locked_until',
+        'last_login_ip',
+    ];
+
+    protected static function booted(): void
+    {
+        // Toda institución actúa con el mismo nivel de acceso que un
+        // responsable de institución cuando se loguea con su propia password.
+        static::created(function (self $institution) {
+            $institution->assignRole('institucion');
+        });
+    }
+
     protected function casts(): array
     {
         return [
@@ -50,6 +82,10 @@ class Institution extends Model
             'primario_years'    => 'integer',
             'offers_secundario' => 'boolean',
             'secundario_years'  => 'integer',
+            'password'          => 'hashed',
+            'password_must_change' => 'boolean',
+            'last_login_at'     => 'datetime',
+            'locked_until'      => 'datetime',
         ];
     }
 
@@ -67,6 +103,27 @@ class Institution extends Model
     public function users(): HasMany
     {
         return $this->hasMany(User::class);
+    }
+
+    public function locality(): BelongsTo
+    {
+        return $this->belongsTo(Locality::class);
+    }
+
+    /**
+     * Cuando el actor autenticado es la propia Institution, su "institution_id"
+     * es su propio id. Este accessor es lo que permite que las Policies, el
+     * middleware de RLS y los controllers que hoy leen $user->institution_id
+     * sigan funcionando sin cambios sea cual sea el tipo de actor autenticado.
+     */
+    public function getInstitutionIdAttribute(): string
+    {
+        return $this->id;
+    }
+
+    public function institutionType(): ?string
+    {
+        return $this->type;
     }
 
     /**

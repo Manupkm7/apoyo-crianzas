@@ -26,6 +26,8 @@ class RolesAndPermissionsSeeder extends Seeder
             'reportes.ver',              // Coordinador: acceso de lectura global al sistema
             'ninos.gestionar',           // Instituciones y admin: ABM de niños y sus registros de dominio
             'importaciones.gestionar',   // Solo admin: subir archivos y resolver la cola de revisión manual
+            'usuarios.carga_masiva',     // Admin y coordinador: carga masiva de usuarios institucionales
+                                          // (no incluye el ABM individual de usuarios/users.gestionar)
         ];
 
         foreach ($permissions as $perm) {
@@ -54,6 +56,9 @@ class RolesAndPermissionsSeeder extends Seeder
             'reportes.ver',
             // El coordinador tiene visibilidad global pero no puede crear/editar niños.
             // La Policy de Child permite viewAny a quien tenga 'reportes.ver'.
+            'usuarios.carga_masiva', // Excepción puntual: puede subir cargas masivas de usuarios
+                                     // institucionales (cualquier institución, cualquier rol), pero
+                                     // NO puede hacer ABM individual de usuarios (eso es 'usuarios.gestionar').
         ]);
 
         // -------------------------------------------------------------------------

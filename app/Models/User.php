@@ -2,6 +2,10 @@
 
 namespace App\Models;
 
+use App\Contracts\SystemActor;
+use App\Models\Concerns\HasInstitutionalRoleChecks;
+use App\Models\Concerns\HasLoginLockout;
+use App\Services\Import\ImportMatchingService;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
@@ -13,9 +17,9 @@ use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
 use Spatie\Permission\Traits\HasRoles;
 
-class User extends Authenticatable
+class User extends Authenticatable implements SystemActor
 {
-    use HasApiTokens, HasFactory, HasRoles, HasUuids, LogsActivity, Notifiable, SoftDeletes;
+    use HasApiTokens, HasFactory, HasInstitutionalRoleChecks, HasLoginLockout, HasRoles, HasUuids, LogsActivity, Notifiable, SoftDeletes;
 
     // Spatie Permission necesita saber que este modelo usa el guard 'sanctum'.
     // Sin esto, syncRoles() y hasRole() buscan los roles con guard 'web' y fallan.
@@ -25,6 +29,8 @@ class User extends Authenticatable
         'name',
         'email',
         'password',
+        'dni',
+        'dni_hash',
         'institution_id',
         'is_active',
         'is_institution_head',
@@ -47,6 +53,7 @@ class User extends Authenticatable
             'last_login_at' => 'datetime',
             'locked_until' => 'datetime',
             'password' => 'hashed',
+            'dni' => 'encrypted',
             'is_active' => 'boolean',
             'is_institution_head' => 'boolean',
         ];
@@ -54,6 +61,8 @@ class User extends Authenticatable
 
     public function getActivitylogOptions(): LogOptions
     {
+        // dni y dni_hash nunca aparecen en el historial de auditoría (mismo criterio
+        // que birth_records: ningún DNI queda expuesto en el audit log).
         return LogOptions::defaults()
             ->logOnly(['name', 'email', 'institution_id', 'is_active', 'is_institution_head'])
             ->logOnlyDirty();
@@ -62,54 +71,6 @@ class User extends Authenticatable
     public function institution(): BelongsTo
     {
         return $this->belongsTo(Institution::class);
-    }
-
-    public function isLocked(): bool
-    {
-        return $this->locked_until !== null && $this->locked_until->isFuture();
-    }
-
-    public function isAdmin(): bool
-    {
-        return $this->hasRole('admin');
-    }
-
-    public function isCoordinator(): bool
-    {
-        return $this->hasRole('coordinador');
-    }
-
-    /**
-     * El responsable principal de la institución (uno por institución).
-     */
-    public function isInstitucion(): bool
-    {
-        return $this->hasRole('institucion');
-    }
-
-    /**
-     * Personal operativo de la institución (rango menor que 'institucion').
-     */
-    public function isRepresentante(): bool
-    {
-        return $this->hasRole('representante');
-    }
-
-    /**
-     * True si el usuario pertenece a una institución específica (institucion o representante).
-     * Estos usuarios tienen acceso restringido a su institución y tipo de datos.
-     */
-    public function isInstitutionalUser(): bool
-    {
-        return $this->hasRole(['institucion', 'representante']);
-    }
-
-    /**
-     * Bypasses PostgreSQL RLS — only admins and coordinadores see all institutions' data.
-     */
-    public function canBypassRls(): bool
-    {
-        return $this->hasRole(['admin', 'coordinador']);
     }
 
     /**
@@ -121,4 +82,57 @@ class User extends Authenticatable
         return $this->institution?->type;
     }
 
+    /**
+     * True si la institución ya tiene un responsable ('institucion') activo.
+     * Usado antes de asignar ese rol (alta manual o carga masiva) para no violar
+     * la unicidad de un único responsable por institución.
+     *
+     * @param string $excludeUserId Id a excluir de la verificación (para permitir
+     *                              "reasignar" el mismo rol al usuario que ya lo tiene)
+     */
+    public static function hasActiveInstitutionHead(string $institutionId, ?string $excludeUserId = null): bool
+    {
+        return static::where('institution_id', $institutionId)
+            ->where('is_institution_head', true)
+            ->when($excludeUserId, fn ($q) => $q->where('id', '!=', $excludeUserId))
+            ->whereNull('deleted_at')
+            ->exists();
+    }
+
+    /**
+     * Normaliza un DNI crudo (puede venir con puntos, espacios o guiones) a solo
+     * dígitos. El DNI argentino siempre tiene 8 dígitos — la validación de
+     * longitud vive en las reglas de request correspondientes, no acá.
+     */
+    public static function normalizeDni(string $rawDni): string
+    {
+        return preg_replace('/\D/', '', $rawDni) ?? '';
+    }
+
+    /**
+     * SHA-256 de un DNI ya normalizado (solo dígitos), para buscar/detectar
+     * duplicados sin descifrar la columna `dni` (cast 'encrypted', IV aleatorio).
+     * Reutiliza ImportMatchingService::hashDni() — el mismo algoritmo que ya usa
+     * el hash de mother_dni/father_dni en birth_records.
+     */
+    public static function dniHash(string $normalizedDni): string
+    {
+        return ImportMatchingService::hashDni($normalizedDni);
+    }
+
+    /**
+     * True si el actor tiene acceso "completo" a la carga masiva de usuarios:
+     * cualquier institución, y puede generar filas con rol 'institucion' o
+     * 'representante'. Lo tienen admin ('usuarios.gestionar') y, como
+     * excepción puntual, coordinador ('usuarios.carga_masiva') — sin que
+     * coordinador gane el ABM individual de usuarios que da 'usuarios.gestionar'.
+     *
+     * Quien NO tenga esto (el responsable de institución, vía
+     * 'representantes.gestionar') solo puede subir para su propia institución
+     * y solo generar representantes — ver UserImportController::rolesAllowedFor().
+     */
+    public function hasFullUserImportAccess(): bool
+    {
+        return $this->can('usuarios.gestionar') || $this->can('usuarios.carga_masiva');
+    }
 }

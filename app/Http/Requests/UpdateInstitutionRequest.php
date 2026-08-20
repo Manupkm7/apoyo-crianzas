@@ -67,8 +67,9 @@ class UpdateInstitutionRequest extends FormRequest
                     ->ignore($institutionId)
                     ->whereNull('deleted_at'),
             ],
-            'type'      => ['sometimes', Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro'])],
-            'is_active' => ['sometimes', 'boolean'],
+            'type'        => ['sometimes', Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro'])],
+            'locality_id' => ['sometimes', 'uuid', 'exists:localities,id'],
+            'is_active'   => ['sometimes', 'boolean'],
 
             // Niveles educativos que ofrece — solo tiene efecto si type === 'educacion'
             'offers_jardin'     => ['sometimes', 'boolean'],

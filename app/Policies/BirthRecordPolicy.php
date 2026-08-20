@@ -2,8 +2,8 @@
 
 namespace App\Policies;
 
+use App\Contracts\SystemActor;
 use App\Models\BirthRecord;
-use App\Models\User;
 
 /**
  * BirthRecordPolicy — Define quién puede gestionar los registros de nacimiento.
@@ -19,27 +19,27 @@ use App\Models\User;
  */
 class BirthRecordPolicy
 {
-    public function viewAny(User $user): bool
+    public function viewAny(SystemActor $user): bool
     {
         return $user->canBypassRls();
     }
 
-    public function view(User $user, BirthRecord $record): bool
+    public function view(SystemActor $user, BirthRecord $record): bool
     {
         return $user->canBypassRls();
     }
 
-    public function create(User $user): bool
+    public function create(SystemActor $user): bool
     {
         return $user->hasRole('admin');
     }
 
-    public function update(User $user, BirthRecord $record): bool
+    public function update(SystemActor $user, BirthRecord $record): bool
     {
         return $user->hasRole('admin');
     }
 
-    public function delete(User $user, BirthRecord $record): bool
+    public function delete(SystemActor $user, BirthRecord $record): bool
     {
         return $user->hasRole('admin');
     }

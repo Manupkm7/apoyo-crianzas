@@ -2,8 +2,8 @@
 
 namespace App\Policies;
 
+use App\Contracts\SystemActor;
 use App\Models\Institution;
-use App\Models\User;
 
 /**
  * InstitutionPolicy — Define quién puede hacer qué con las instituciones.
@@ -23,7 +23,7 @@ class InstitutionPolicy
      * Admins y coordinadores ven todas. Los usuarios institucionales
      * también tienen acceso (el controlador filtra el resultado a la suya).
      */
-    public function viewAny(User $user): bool
+    public function viewAny(SystemActor $user): bool
     {
         return $user->can('instituciones.gestionar')
             || $user->can('reportes.ver')
@@ -36,7 +36,7 @@ class InstitutionPolicy
      * - Admin y coordinador: pueden ver cualquier institución.
      * - Responsable/representante: solo pueden ver la institución a la que pertenecen.
      */
-    public function view(User $user, Institution $institution): bool
+    public function view(SystemActor $user, Institution $institution): bool
     {
         if ($user->can('instituciones.gestionar') || $user->can('reportes.ver')) {
             return true;
@@ -50,7 +50,7 @@ class InstitutionPolicy
      *
      * Solo el administrador puede dar de alta instituciones nuevas.
      */
-    public function create(User $user): bool
+    public function create(SystemActor $user): bool
     {
         return $user->can('instituciones.gestionar');
     }
@@ -63,7 +63,7 @@ class InstitutionPolicy
      *   de SU propia institución (dirección y teléfono). Los campos
      *   sensibles (nombre, tipo, is_active) están restringidos en el Form Request.
      */
-    public function update(User $user, Institution $institution): bool
+    public function update(SystemActor $user, Institution $institution): bool
     {
         if ($user->can('instituciones.gestionar')) {
             return true;
@@ -78,7 +78,7 @@ class InstitutionPolicy
      *
      * Solo el administrador puede desactivar instituciones.
      */
-    public function delete(User $user, Institution $institution): bool
+    public function delete(SystemActor $user, Institution $institution): bool
     {
         return $user->can('instituciones.gestionar');
     }
