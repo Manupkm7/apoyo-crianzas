@@ -70,8 +70,9 @@ services:
   # Reutiliza la MISMA imagen que 'app' (crianza-app), el mismo .env y el mismo
   # volumen de storage privado (donde 'app' deja el archivo subido que el job
   # tiene que leer). Solo cambia el comando: queue:work en vez de php-fpm.
-  # Corre como www-data para que los logs/archivos que cree sean del mismo
-  # dueño que los de php-fpm.
+  # Corre como root, igual que 'app' (su php-fpm master y los `exec app artisan`
+  # del deploy): así comparte dueño con storage/logs/laravel.log y evita el
+  # "Permission denied" al escribir el log.
   #
   #   --timeout=1810  : los jobs de import declaran timeout=1800 (30 min); el
   #                     worker debe tolerar al menos eso.
@@ -89,7 +90,6 @@ services:
       context: .
       dockerfile: deploy/Dockerfile
     image: crianza-app
-    user: www-data
     command: php artisan queue:work --tries=1 --timeout=1810 --sleep=3 --max-time=3600
     volumes:
       - ./.env:/var/www/html/.env:ro
