@@ -50,5 +50,12 @@ docker compose -f compose.prod.yaml exec app php artisan config:cache
 docker compose -f compose.prod.yaml exec app php artisan route:cache
 docker compose -f compose.prod.yaml exec app php artisan view:cache
 
+# ── 6. Reiniciar el worker de colas ──────────────────────────────────────
+# queue:work es un proceso de larga vida: bootea una sola vez y no ve el
+# código ni la config nueva hasta que se le pide reiniciar. Sale tras el
+# job en curso y 'restart: unless-stopped' lo vuelve a levantar.
+echo "→ Reiniciando el worker de colas..."
+docker compose -f compose.prod.yaml exec app php artisan queue:restart
+
 echo ""
 echo "=== Deploy completado ==="

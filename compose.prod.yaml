@@ -42,11 +42,59 @@ services:
     build:
       context: .
       dockerfile: deploy/Dockerfile
+    # Nombre de imagen fijo para que queue-worker reutilice EXACTAMENTE la misma
+    # (se buildea una sola vez).
+    image: crianza-app
     volumes:
       # El .env vive en el VPS y se monta en el contenedor (nunca se bake en la imagen)
       - ./.env:/var/www/html/.env:ro
       # Storage persistente fuera de la imagen (archivos subidos, logs)
       - laravel_storage:/var/www/html/storage/app/public
+      # Disco 'local' (storage/app/private): acá caen los archivos de importación
+      # masiva mientras esperan a que el queue-worker los procese. Tiene que ser
+      # un volumen compartido con queue-worker, si no el job no encuentra el archivo.
+      - laravel_private:/var/www/html/storage/app/private
+      - laravel_logs:/var/www/html/storage/logs
+    restart: unless-stopped
+    depends_on:
+      - pgsql
+      - redis
+    networks:
+      - crianza
+
+  # ── queue-worker: procesa los jobs encolados ────────────────────────────
+  # Sin este servicio, QUEUE_CONNECTION=database deja las importaciones masivas
+  # (ProcessImportBatch / ProcessUserImportBatch) en estado 'pending' para
+  # siempre — nadie las consume.
+  #
+  # Reutiliza la MISMA imagen que 'app' (crianza-app), el mismo .env y el mismo
+  # volumen de storage privado (donde 'app' deja el archivo subido que el job
+  # tiene que leer). Solo cambia el comando: queue:work en vez de php-fpm.
+  # Corre como www-data para que los logs/archivos que cree sean del mismo
+  # dueño que los de php-fpm.
+  #
+  #   --timeout=1810  : los jobs de import declaran timeout=1800 (30 min); el
+  #                     worker debe tolerar al menos eso.
+  #   --tries=1       : si un job falla va a failed_jobs, no se reintenta solo
+  #                     (mismo criterio que declaran los jobs).
+  #   --max-time=3600 : el worker se recicla cada hora (libera memoria);
+  #                     restart:unless-stopped lo vuelve a levantar.
+  #
+  # OJO: DB_QUEUE_RETRY_AFTER en el .env debe ser MAYOR que --timeout (ya está
+  # en 1900) o un job largo se re-despacha mientras todavía está corriendo.
+  # Tras cada deploy hay que correr `php artisan queue:restart` para que tome
+  # el código nuevo (ver deploy/deploy.sh).
+  queue-worker:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: crianza-app
+    user: www-data
+    command: php artisan queue:work --tries=1 --timeout=1810 --sleep=3 --max-time=3600
+    volumes:
+      - ./.env:/var/www/html/.env:ro
+      - laravel_storage:/var/www/html/storage/app/public
+      - laravel_private:/var/www/html/storage/app/private
       - laravel_logs:/var/www/html/storage/logs
     restart: unless-stopped
     depends_on:
@@ -94,4 +142,5 @@ volumes:
   pgdata:
   redisdata:
   laravel_storage:
+  laravel_private:
   laravel_logs:
