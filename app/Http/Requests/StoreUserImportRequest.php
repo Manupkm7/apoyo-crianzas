@@ -11,7 +11,7 @@ use Illuminate\Validation\Rule;
  *
  * Quién puede subir:
  *   - Admin ('usuarios.gestionar') y coordinador ('usuarios.carga_masiva'):
- *     cualquier institución, ver User::hasFullUserImportAccess().
+ *     cualquier institución, ver SystemActor::hasFullUserImportAccess().
  *   - Responsable de institución ('representantes.gestionar'): solo la propia
  *     (y solo podrá generar representantes — la restricción de rol por fila
  *     se aplica en UserImportRowProcessor, no acá).

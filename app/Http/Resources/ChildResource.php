@@ -2,6 +2,7 @@
 
 namespace App\Http\Resources;
 
+use App\Services\ChildAlertEvaluator;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -37,8 +38,20 @@ class ChildResource extends JsonResource
 
     public function toArray(Request $request): array
     {
-        $user   = $request->user();
-        $alerts = $this->computeAlerts();
+        $user = $request->user();
+
+        // Solo evaluamos alertas de los sectores que el usuario tiene cargados
+        // (mismo criterio de RLS que arma el controlador).
+        $sectors = [];
+        if ($this->relationLoaded('educationRecord') && $this->educationRecord) {
+            $sectors[] = 'educacion';
+        }
+        if ($this->relationLoaded('healthRecord') && $this->healthRecord) {
+            $sectors[] = 'salud';
+        }
+
+        $alerts     = (new ChildAlertEvaluator($this->resource))->evaluate($sectors);
+        $hasPending = collect($alerts)->contains(fn (array $a) => $a['status'] === 'pending');
 
         return [
             'id'         => $this->id,
@@ -83,13 +96,15 @@ class ChildResource extends JsonResource
                     : null;
             }),
 
-            // Alertas calculadas a partir de los registros que el usuario puede ver
-            // (inasistencias elevadas, no escolarizado, controles/vacunas atrasadas).
+            // Alertas del SAT calculadas a partir de los registros que el usuario
+            // puede ver (foto vigente + último bimestre informado), cada una con
+            // su estado de gestión ('pending' | 'managed'). Ver ChildAlertEvaluator.
             'alerts'    => $alerts,
-            'has_alert' => count($alerts) > 0,
+            // has_alert = hay al menos una alerta PENDIENTE (las gestionadas no cuentan).
+            'has_alert' => $hasPending,
 
             // Solo presente en el detalle para usuarios institucionales: indica si el niño
-            // tiene una alerta en el OTRO sector, sin revelar el detalle (ver ChildController::show).
+            // tiene una alerta pendiente en el OTRO sector, sin revelar el detalle (ver ChildController::show).
             'other_sector_alert' => $this->when(
                 ! is_null($this->other_sector_alert),
                 fn () => (bool) $this->other_sector_alert
@@ -98,35 +113,5 @@ class ChildResource extends JsonResource
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
         ];
-    }
-
-    /**
-     * Junta las alertas visibles de este niño según lo que el usuario tiene cargado
-     * (educationRecord/healthRecord). El mismo criterio se usa en ChildController
-     * para el filtro `?alert=1` y para el conteo de `alerts_count`.
-     */
-    private function computeAlerts(): array
-    {
-        $alerts = [];
-
-        if ($this->relationLoaded('educationRecord') && $this->educationRecord) {
-            if (! $this->educationRecord->is_enrolled) {
-                $alerts[] = 'No escolarizado';
-            }
-            if ($this->educationRecord->absences_count > 10) {
-                $alerts[] = 'Inasistencias elevadas';
-            }
-        }
-
-        if ($this->relationLoaded('healthRecord') && $this->healthRecord) {
-            if (! $this->healthRecord->healthy_checkup_current) {
-                $alerts[] = 'Control de niño sano atrasado';
-            }
-            if (! $this->healthRecord->vaccines_current) {
-                $alerts[] = 'Vacunas atrasadas';
-            }
-        }
-
-        return $alerts;
     }
 }

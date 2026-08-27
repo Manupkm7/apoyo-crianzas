@@ -54,7 +54,8 @@ class EducationObservationController extends Controller
 
         $data = [
             'education_record_id' => $record->id,
-            'author_id'            => $user->id,
+            'author_id'            => $user->getKey(),
+            'author_type'          => $user->getMorphClass(),
             'body'                 => $request->validated('body'),
         ];
 

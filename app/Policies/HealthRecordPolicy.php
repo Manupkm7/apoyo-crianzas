@@ -49,19 +49,17 @@ class HealthRecordPolicy
     }
 
     /**
-     * ¿Puede este usuario crear un registro de salud para un niño?
+     * ¿Puede este usuario vincular un niño a una institución de salud creando su
+     * registro?
      *
-     * Solo usuarios de instituciones de tipo salud (y admin como caso especial).
+     * SOLO el admin. Una institución no puede "adoptar" por su cuenta un niño que
+     * ya existe — lo decide el admin desde el perfil del niño. El registro de una
+     * institución que da de alta un niño NUEVO lo crea ChildController::store
+     * directamente (auto-vínculo), sin pasar por esta Policy.
      */
     public function create(SystemActor $user): bool
     {
-        if ($user->hasRole('admin')) {
-            return true;
-        }
-
-        return $user->isInstitutionalUser()
-            && $user->institutionType() === 'salud'
-            && $user->can('ninos.gestionar');
+        return $user->hasRole('admin');
     }
 
     /**

@@ -11,8 +11,9 @@ use Illuminate\Http\Request;
 /**
  * EducationDashboardController — Resumen por nivel/grado para el dashboard
  * de una institución educativa: cuántos niños hay en cada grado y cuántos
- * de ellos tienen alguna alerta (mismo criterio que ChildResource::computeAlerts
- * para el dominio educativo: no escolarizado o inasistencias > 10).
+ * de ellos tienen alguna alerta (no escolarizado o inasistencias sobre el
+ * umbral). Es un conteo simple sobre la foto vigente: no mira reportes
+ * bimestrales ni gestiones, a diferencia de ChildAlertEvaluator.
  */
 class EducationDashboardController extends Controller
 {
@@ -41,13 +42,15 @@ class EducationDashboardController extends Controller
         $records = EducationRecord::where('institution_id', $institution->id)
             ->get(['level', 'grade', 'is_enrolled', 'absences_count']);
 
+        $absenceThreshold = \App\Services\ChildAlertEvaluator::absenceThreshold();
+
         $levels = [];
         foreach ($institution->educationLevelDefinitions() as $levelKey => $def) {
             $grades = [];
             for ($grade = 1; $grade <= $def['max_grade']; $grade++) {
                 $inGrade = $records->where('level', $levelKey)->where('grade', $grade);
                 $alerts  = $inGrade->filter(
-                    fn ($r) => ! $r->is_enrolled || $r->absences_count > 10
+                    fn ($r) => ! $r->is_enrolled || $r->absences_count > $absenceThreshold
                 )->count();
 
                 $grades[] = [

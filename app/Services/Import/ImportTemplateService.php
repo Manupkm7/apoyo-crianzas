@@ -38,6 +38,18 @@ class ImportTemplateService
         ['label' => 'Grado',                  'required' => false, 'example' => '3° grado',             'help' => 'Grado, año, sala o sección.'],
     ];
 
+    private const HEALTH_FIELDS = [
+        ['label' => 'Nombre',                 'required' => true,  'example' => 'Juan',                'help' => 'Nombre del niño o niña.'],
+        ['label' => 'Apellido',               'required' => true,  'example' => 'Pérez',                'help' => 'Apellido del niño o niña.'],
+        ['label' => 'Fecha de nacimiento',    'required' => true,  'example' => '15/03/2020',           'help' => 'Formato DD/MM/AAAA.'],
+        ['label' => 'DNI',                    'required' => false, 'example' => '41222333',             'help' => 'Sin puntos ni espacios.'],
+        ['label' => 'Centro de salud',        'required' => true,  'example' => 'CAPS N°3',              'help' => 'Salita, hospital o centro de salud.'],
+        ['label' => 'Control sano al día',    'required' => false, 'example' => 'Sí',                   'help' => 'Sí / No. Dejar vacío si no se sabe.'],
+        ['label' => 'Vacunas al día',         'required' => false, 'example' => 'Sí',                   'help' => 'Sí / No. Dejar vacío si no se sabe.'],
+        ['label' => 'Fecha último control',   'required' => false, 'example' => '10/06/2025',           'help' => 'Formato DD/MM/AAAA.'],
+        ['label' => 'Observaciones',          'required' => false, 'example' => '',                     'help' => 'Notas adicionales, opcional.'],
+    ];
+
     private const USER_FIELDS = [
         ['label' => 'ID_NOMBRE',   'required' => true, 'example' => 'Juan',        'help' => 'Nombre de la persona.'],
         ['label' => 'ID_APELLIDO','required' => true, 'example' => 'Pérez',        'help' => 'Apellido de la persona.'],
@@ -48,12 +60,14 @@ class ImportTemplateService
     private const SOURCE_LABELS = [
         'civil_registry' => 'Registro Civil',
         'education'      => 'Educación',
+        'health'         => 'Salud',
         'users'          => 'Usuarios',
     ];
 
     private const SOURCE_FILENAMES = [
         'civil_registry' => 'registro_civil',
         'education'      => 'educacion',
+        'health'         => 'salud',
         'users'          => 'usuarios',
     ];
 
@@ -75,6 +89,7 @@ class ImportTemplateService
         return match ($source) {
             'civil_registry' => self::CIVIL_REGISTRY_FIELDS,
             'users'          => self::USER_FIELDS,
+            'health'         => self::HEALTH_FIELDS,
             default          => self::EDUCATION_FIELDS,
         };
     }

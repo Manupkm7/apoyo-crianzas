@@ -16,6 +16,8 @@ class ImportBatch extends Model
         'institution_id',
         'status',
         'original_filename',
+        'storage_path',
+        'sheet_name',
         'total_rows',
         'processed_rows',
         'matched_rows',

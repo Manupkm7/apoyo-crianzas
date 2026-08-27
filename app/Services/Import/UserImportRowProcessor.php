@@ -46,13 +46,13 @@ class UserImportRowProcessor
     /**
      * @param array $rowData          Datos ya mapeados por ImportParserService (first_name, last_name, dni, role)
      * @param string $institutionId   Institución del batch — todos los usuarios creados pertenecen a ella
-     * @param string $uploaderId      Quién subió el archivo (created_by del usuario nuevo)
+     * @param string|null $uploaderId Quién subió el archivo (created_by del usuario nuevo); null si fue una Institution
      * @param array $rolesAllowedForUploader  Roles que el uploader tiene permiso de asignar (subconjunto de ALLOWED_ROLES)
      */
     public function process(
         array $rowData,
         string $institutionId,
-        string $uploaderId,
+        ?string $uploaderId,
         array $rolesAllowedForUploader,
     ): RowProcessResult {
         $firstName = trim((string) ($rowData['first_name'] ?? ''));

@@ -64,6 +64,20 @@ class EducationRecordController extends Controller
         // targetInstitution() ya validó que sea válida y de tipo 'educacion'.
         $institutionId = $request->targetInstitution()->id;
 
+        // Si esta institución ya tuvo un registro que luego se desvinculó
+        // (soft delete), se restaura en vez de crear uno nuevo — así no choca
+        // con el unique (child_id, institution_id) y se recupera el historial.
+        $trashed = $child->educationRecord()->onlyTrashed()->where('institution_id', $institutionId)->first();
+        if ($trashed) {
+            $trashed->restore();
+            $trashed->update([
+                ...$request->validated(),
+                'updated_by' => $request->user()->auditId(),
+            ]);
+
+            return response()->json(new EducationRecordResource($trashed->fresh()));
+        }
+
         // Un niño solo puede tener un registro por institución educativa
         if ($child->educationRecord()->where('institution_id', $institutionId)->exists()) {
             return response()->json([
@@ -75,7 +89,7 @@ class EducationRecordController extends Controller
             ...$request->validated(),
             'child_id'       => $child->id,
             'institution_id' => $institutionId,
-            'created_by'     => $request->user()->id,
+            'created_by'     => $request->user()->auditId(),
         ]);
 
         return (new EducationRecordResource($record))
@@ -98,12 +112,20 @@ class EducationRecordController extends Controller
 
         $this->authorize('update', $record);
 
+        $data = $request->validated();
+
+        // Al reasignar institución (solo admin) sin mandar un nombre de escuela
+        // explícito, se toma el de la nueva institución.
+        if (! empty($data['institution_id']) && empty($data['school_name'])) {
+            $data['school_name'] = \App\Models\Institution::find($data['institution_id'])?->name ?? $record->school_name;
+        }
+
         $record->update([
-            ...$request->validated(),
-            'updated_by' => $user->id,
+            ...$data,
+            'updated_by' => $user->auditId(),
         ]);
 
-        return response()->json(new EducationRecordResource($record));
+        return response()->json(new EducationRecordResource($record->fresh()));
     }
 
     /**
@@ -117,7 +139,7 @@ class EducationRecordController extends Controller
 
         $this->authorize('delete', $record);
 
-        $record->update(['updated_by' => $request->user()->id]);
+        $record->update(['updated_by' => $request->user()->auditId()]);
         $record->delete();
 
         return response()->json([

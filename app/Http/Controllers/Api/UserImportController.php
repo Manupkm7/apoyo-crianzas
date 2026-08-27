@@ -2,13 +2,13 @@
 
 namespace App\Http\Controllers\Api;
 
+use App\Contracts\SystemActor;
 use App\Http\Controllers\Controller;
 use App\Http\Requests\ResolveUserImportRowRequest;
 use App\Http\Requests\StoreUserImportRequest;
 use App\Http\Resources\UserImportBatchResource;
 use App\Http\Resources\UserImportRowResource;
 use App\Jobs\ProcessUserImportBatch;
-use App\Models\User;
 use App\Models\UserImportBatch;
 use App\Models\UserImportRow;
 use App\Services\Import\ImportTemplateService;
@@ -28,7 +28,7 @@ use Illuminate\Support\Facades\File;
  * Acceso:
  *   - Admin ('usuarios.gestionar') y coordinador ('usuarios.carga_masiva'):
  *     cualquier institución, cualquiera de los dos roles — ver
- *     User::hasFullUserImportAccess().
+ *     SystemActor::hasFullUserImportAccess() (trait HasInstitutionalRoleChecks).
  *   - Responsable de institución ('representantes.gestionar'): solo su
  *     propia institución; las filas que pidan rol 'institucion' quedan en
  *     revisión con motivo 'invalid_role' (no tiene permiso para asignarlo).
@@ -68,7 +68,8 @@ class UserImportController extends Controller
         $batch = UserImportBatch::create([
             'institution_id'    => $request->input('institution_id'),
             'original_filename' => $file->getClientOriginalName(),
-            'uploaded_by'       => $request->user()->id,
+            // FK a users; null si sube una institución (queda registrada en institution_id).
+            'uploaded_by'       => $request->user()->auditId(),
             'status'            => 'pending',
         ]);
 
@@ -165,7 +166,8 @@ class UserImportController extends Controller
         }
 
         $action = $request->input('action');
-        $userId = $request->user()->id;
+        // resolved_by es FK a users; null si quien resuelve es una Institution.
+        $userId = $request->user()->auditId();
 
         if ($action === 'skip') {
             $row->update([
@@ -239,7 +241,7 @@ class UserImportController extends Controller
      * Admin y coordinador: ambos. Responsable de institución: solo representante
      * (nunca puede crear otro 'institucion', ni siquiera en su propia institución).
      */
-    private function rolesAllowedFor(User $user): array
+    private function rolesAllowedFor(SystemActor $user): array
     {
         return $user->hasFullUserImportAccess()
             ? ['institucion', 'representante']

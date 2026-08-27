@@ -21,6 +21,8 @@ use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\Facades\RateLimiter;
 use Illuminate\Support\ServiceProvider;
+use Laravel\Sanctum\PersonalAccessToken;
+use Laravel\Sanctum\Sanctum;
 
 /**
  * AppServiceProvider — Configuración inicial de la aplicación.
@@ -55,6 +57,25 @@ class AppServiceProvider extends ServiceProvider
         // Requerido por throttleApi() en bootstrap/app.php.
         RateLimiter::for('api', function (Request $request) {
             return Limit::perMinute(60)->by($request->user()?->id ?: $request->ip());
+        });
+
+        // El guard 'sanctum' está atado al provider 'users' (lo necesita
+        // Spatie\Permission para resolver el modelo del guard). Por eso Sanctum
+        // rechaza vía Guard::hasValidProvider() todo token cuyo tokenable no sea
+        // App\Models\User — incluidos los de Institution (login institucional,
+        // ver InstitutionAuthController). Revalidamos esos tokens a mano:
+        // comprobamos el vencimiento igual que hace Sanctum con expires_at.
+        Sanctum::authenticateAccessTokensUsing(function (PersonalAccessToken $accessToken, bool $isValid) {
+            if ($isValid) {
+                return true;
+            }
+
+            if (! ($accessToken->tokenable instanceof Institution)) {
+                return false;
+            }
+
+            return $accessToken->expires_at === null
+                || $accessToken->expires_at->isFuture();
         });
 
         // Instituciones — gestión del catálogo de instituciones municipales

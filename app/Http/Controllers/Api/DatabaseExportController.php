@@ -231,7 +231,7 @@ class DatabaseExportController extends Controller
             'Último control', 'Observaciones', 'Creado', 'Actualizado', 'Eliminado',
         ], $healthRecords->map(fn (HealthRecord $r) => [
             $r->id, $this->childName($r->child), $r->institution?->name, $r->health_center_name,
-            $this->bool($r->healthy_checkup_current), $this->bool($r->vaccines_current),
+            $this->boolOrUnknown($r->healthy_checkup_current), $this->boolOrUnknown($r->vaccines_current),
             $this->d($r->last_checkup_date), $r->observations,
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
@@ -394,6 +394,20 @@ class DatabaseExportController extends Controller
     private function bool(?bool $value): string
     {
         return $value ? 'Sí' : 'No';
+    }
+
+    /**
+     * A diferencia de bool(), distingue null ("sin dato" — ej: registro de salud
+     * creado por importación sin esa columna) de false ("no", confirmado). Usarlo
+     * solo en columnas nullable donde esa distinción es relevante.
+     */
+    private function boolOrUnknown(?bool $value): string
+    {
+        return match ($value) {
+            true    => 'Sí',
+            false   => 'No',
+            default => 'Sin dato',
+        };
     }
 
     private function dt(?Carbon $value): ?string

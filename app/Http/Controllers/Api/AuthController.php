@@ -162,6 +162,7 @@ class AuthController extends Controller
                 'name'        => $actor->name,
                 'roles'       => $actor->getRoleNames(),
                 'permissions' => $actor->getAllPermissions()->pluck('name'),
+                'password_must_change' => $actor->password_must_change,
                 'institution' => $actor->only([
                     'id', 'name', 'type',
                     'offers_jardin', 'offers_primario', 'primario_years',

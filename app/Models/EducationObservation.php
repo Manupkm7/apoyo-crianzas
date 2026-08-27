@@ -6,6 +6,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphTo;
 use Illuminate\Database\Eloquent\SoftDeletes;
 
 /**
@@ -22,6 +23,7 @@ class EducationObservation extends Model
     protected $fillable = [
         'education_record_id',
         'author_id',
+        'author_type',
         'body',
         'attachment_path',
         'attachment_original_name',
@@ -41,8 +43,12 @@ class EducationObservation extends Model
         return $this->belongsTo(EducationRecord::class);
     }
 
-    public function author(): BelongsTo
+    /**
+     * Autor de la entrada: un User (cuenta personal) o una Institution (login
+     * institucional). Ambos exponen ->name, que es lo que consume el Resource.
+     */
+    public function author(): MorphTo
     {
-        return $this->belongsTo(User::class, 'author_id');
+        return $this->morphTo();
     }
 }

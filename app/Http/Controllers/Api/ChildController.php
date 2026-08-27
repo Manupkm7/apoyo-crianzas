@@ -7,6 +7,7 @@ use App\Http\Requests\StoreChildRequest;
 use App\Http\Requests\UpdateChildRequest;
 use App\Http\Resources\ChildResource;
 use App\Models\Child;
+use App\Services\ChildAlertEvaluator;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -43,7 +44,7 @@ class ChildController extends Controller
      *   el DNI está cifrado, solo se puede comparar contra su hash).
      * - has_education / has_health: '1' o '0' — filtra por si tiene o no ese registro cargado.
      *   Útil porque cada tipo de institución carga un subconjunto distinto de niños.
-     * - alert: '1' — solo niños con alguna alerta (ver ChildResource::computeAlerts).
+     * - alert: '1' — solo niños con alguna alerta PENDIENTE (ver ChildAlertEvaluator).
      * - per_page: tamaño de página (máx. 100, default 20).
      *
      * La respuesta incluye `alerts_count`: cuántos niños del resultado filtrado
@@ -58,19 +59,35 @@ class ChildController extends Controller
 
         if ($user->canBypassRls()) {
             // Admin y coordinador ven todos los niños con sus registros de ambos dominios,
-            // más nacimiento/defunción (exclusivos de admin/coordinador — ver BirthRecordPolicy)
-            $query->with(['educationRecord', 'healthRecord', 'birthRecord', 'deathRecord']);
+            // más nacimiento/defunción (exclusivos de admin/coordinador — ver BirthRecordPolicy).
+            // latestPeriodReport + alertAcknowledgements alimentan el cálculo de alertas del SAT.
+            $query->with([
+                'educationRecord.latestPeriodReport',
+                'healthRecord.latestPeriodReport',
+                'birthRecord',
+                'deathRecord',
+                'alertAcknowledgements.acknowledgedByUser',
+                'alertAcknowledgements.acknowledgedByInstitution',
+            ]);
         } elseif ($user->institutionType() === 'educacion') {
             // La institución educativa ve solo niños con registro en su institución,
             // e incluye únicamente el registro educativo (no pueden ver datos de salud)
             $query
                 ->whereHas('educationRecord', fn ($q) => $q->where('institution_id', $user->institution_id))
-                ->with(['educationRecord' => fn ($q) => $q->where('institution_id', $user->institution_id)]);
+                ->with([
+                    'educationRecord' => fn ($q) => $q->where('institution_id', $user->institution_id)->with('latestPeriodReport'),
+                    'alertAcknowledgements' => fn ($q) => $q->where('sector', 'educacion')
+                        ->with(['acknowledgedByUser', 'acknowledgedByInstitution']),
+                ]);
         } elseif ($user->institutionType() === 'salud') {
             // La institución de salud ve solo niños con registro en su institución
             $query
                 ->whereHas('healthRecord', fn ($q) => $q->where('institution_id', $user->institution_id))
-                ->with(['healthRecord' => fn ($q) => $q->where('institution_id', $user->institution_id)]);
+                ->with([
+                    'healthRecord' => fn ($q) => $q->where('institution_id', $user->institution_id)->with('latestPeriodReport'),
+                    'alertAcknowledgements' => fn ($q) => $q->where('sector', 'salud')
+                        ->with(['acknowledgedByUser', 'acknowledgedByInstitution']),
+                ]);
         } else {
             // Otros tipos de institución (desarrollo_social, etc.) no ven niños aún.
             // Cuando se implementen esos módulos, se agregarán sus condiciones aquí.
@@ -106,35 +123,18 @@ class ChildController extends Controller
             $query->whereHas('educationRecord', fn ($q) => $q->where('grade', (int) $request->query('grade')));
         }
 
-        // Misma definición de "alerta" que ChildResource::computeAlerts(), acotada
-        // a lo que este usuario puede ver de cada niño (mismo criterio de RLS de arriba).
-        $alertCondition = function ($q) use ($user) {
-            $q->where(function ($inner) use ($user) {
-                if ($user->canBypassRls() || $user->institutionType() === 'educacion') {
-                    $inner->orWhereHas('educationRecord', function ($eq) use ($user) {
-                        if (! $user->canBypassRls()) {
-                            $eq->where('institution_id', $user->institution_id);
-                        }
-                        $eq->where(fn ($w) => $w->where('is_enrolled', false)->orWhere('absences_count', '>', 10));
-                    });
-                }
-                if ($user->canBypassRls() || $user->institutionType() === 'salud') {
-                    $inner->orWhereHas('healthRecord', function ($hq) use ($user) {
-                        if (! $user->canBypassRls()) {
-                            $hq->where('institution_id', $user->institution_id);
-                        }
-                        $hq->where(fn ($w) => $w->where('healthy_checkup_current', false)->orWhere('vaccines_current', false));
-                    });
-                }
-            });
-        };
+        // "Alerta pendiente" según ChildAlertEvaluator: foto vigente o último
+        // bimestre informado marcan el problema, y no hay gestión vigente. Acotado
+        // a los sectores que este usuario puede ver (mismo criterio de RLS de arriba).
+        $countQuery = clone $query;
+        ChildAlertEvaluator::applyPendingAlertScope($countQuery, $user);
 
         // Se cuenta ANTES de aplicar el filtro `alert`, para que el número no cambie
         // según si el usuario activó o no el toggle "solo con alertas".
-        $alertsCount = (clone $query)->where($alertCondition)->count();
+        $alertsCount = $countQuery->count();
 
         if ($request->boolean('alert')) {
-            $query->where($alertCondition);
+            ChildAlertEvaluator::applyPendingAlertScope($query, $user);
         }
 
         $perPage = (int) $request->query('per_page', 20);
@@ -167,25 +167,41 @@ class ChildController extends Controller
         $user = $request->user();
 
         if ($user->canBypassRls()) {
-            // Admin/coordinador: ver todo, incluyendo el nombre de las instituciones
+            // Admin/coordinador: ver todo, incluyendo el nombre de las instituciones.
+            // latestPeriodReport + alertAcknowledgements alimentan el cálculo de alertas del SAT.
             $child->load([
                 'educationRecord.institution',
+                'educationRecord.latestPeriodReport',
                 'healthRecord.institution',
+                'healthRecord.latestPeriodReport',
                 'birthRecord.institution',
                 'deathRecord.institution',
+                'alertAcknowledgements.acknowledgedByUser',
+                'alertAcknowledgements.acknowledgedByInstitution',
             ]);
         } else {
+            $sector = $user->institutionType();
+
+            // El último bimestre informado alimenta el cálculo de alertas del SAT.
+            if ($sector === 'educacion') {
+                $child->load('educationRecord.latestPeriodReport');
+            } elseif ($sector === 'salud') {
+                $child->load('healthRecord.latestPeriodReport');
+            }
+
+            // Gestiones de alertas — solo las del sector del usuario.
+            if (in_array($sector, ['educacion', 'salud'], true)) {
+                $child->load(['alertAcknowledgements' => fn ($q) => $q->where('sector', $sector)
+                    ->with(['acknowledgedByUser', 'acknowledgedByInstitution'])]);
+            }
+
             // Para una institución (no admin/coordinador), avisamos si el niño tiene una
-            // alerta en el OTRO sector, sin revelar ningún detalle de ese registro —
-            // la institución educativa no puede ver datos de salud y viceversa.
-            $otherSectorAlert = match ($user->institutionType()) {
-                'educacion' => $child->healthRecord()
-                    ->where(fn ($q) => $q->where('healthy_checkup_current', false)->orWhere('vaccines_current', false))
-                    ->exists(),
-                'salud' => $child->educationRecord()
-                    ->where(fn ($q) => $q->where('is_enrolled', false)->orWhere('absences_count', '>', 10))
-                    ->exists(),
-                default => null,
+            // alerta PENDIENTE en el OTRO sector, sin revelar ningún detalle de ese
+            // registro — la institución educativa no puede ver datos de salud y viceversa.
+            $otherSectorAlert = match ($sector) {
+                'educacion' => ChildAlertEvaluator::sectorHasPendingAlert($child, 'salud'),
+                'salud'     => ChildAlertEvaluator::sectorHasPendingAlert($child, 'educacion'),
+                default     => null,
             };
             $child->setAttribute('other_sector_alert', $otherSectorAlert);
         }
@@ -227,7 +243,7 @@ class ChildController extends Controller
         $user  = $request->user();
         $child = Child::create([
             ...$data,
-            'created_by' => $user->id,
+            'created_by' => $user->auditId(),
         ]);
 
         // Cuando el creador es una institución (no admin ni coordinador),
@@ -243,7 +259,7 @@ class ChildController extends Controller
                     'school_name'    => $institution->name,
                     'is_enrolled'    => true,
                     'absences_count' => 0,
-                    'created_by'     => $user->id,
+                    'created_by'     => $user->auditId(),
                 ]);
             } elseif ($institution->type === 'salud') {
                 $child->healthRecord()->create([
@@ -251,7 +267,7 @@ class ChildController extends Controller
                     'health_center_name'      => $institution->name,
                     'healthy_checkup_current' => true,
                     'vaccines_current'        => true,
-                    'created_by'              => $user->id,
+                    'created_by'              => $user->auditId(),
                 ]);
             }
         }
@@ -285,7 +301,15 @@ class ChildController extends Controller
 
         $child->update([
             ...$data,
-            'updated_by' => $request->user()->id,
+            'updated_by' => $request->user()->auditId(),
+        ]);
+
+        // Para que ChildResource pueda calcular las alertas del SAT sin N+1.
+        $child->load([
+            'educationRecord.latestPeriodReport',
+            'healthRecord.latestPeriodReport',
+            'alertAcknowledgements.acknowledgedByUser',
+            'alertAcknowledgements.acknowledgedByInstitution',
         ]);
 
         return new ChildResource($child);
@@ -301,7 +325,7 @@ class ChildController extends Controller
     {
         $this->authorize('delete', $child);
 
-        $child->update(['updated_by' => $request->user()->id]);
+        $child->update(['updated_by' => $request->user()->auditId()]);
         $child->delete();
 
         return response()->json([

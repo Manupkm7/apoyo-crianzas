@@ -28,12 +28,17 @@ class ImportParserService
     private const CIVIL_REGISTRY_COLUMNS = [
         'first_name' => [
             'nombre', 'nombres', 'primer nombre', 'primer_nombre', 'first_name', 'nombre del niño', 'nombre niño',
+            'id_nombre',
         ],
         'last_name' => [
-            'apellido', 'apellidos', 'last_name', 'apellido del niño', 'apellido niño',
+            'apellido', 'apellidos', 'last_name', 'apellido del niño', 'apellido niño', 'id_apellido',
+        ],
+        'dni' => [
+            'dni', 'documento', 'documento identidad', 'documento_identidad', 'cuil', 'doc', 'id_dni',
         ],
         'birth_date' => [
             'fecha nacimiento', 'fecha_nacimiento', 'fec nac', 'fec_nac', 'birth_date', 'fecha de nacimiento', 'fnac',
+            'nacimiento', 'f_nac', 'f nac', 'f. nac.',
         ],
         'mother_name' => [
             'nombre madre', 'nombre de la madre', 'madre', 'madre nombre', 'nombre_madre', 'progenitora',
@@ -74,15 +79,17 @@ class ImportParserService
     private const EDUCATION_COLUMNS = [
         'first_name' => [
             'nombre', 'nombres', 'primer nombre', 'primer_nombre', 'first_name', 'nombre del alumno', 'nombre alumno',
+            'id_nombre',
         ],
         'last_name' => [
-            'apellido', 'apellidos', 'last_name', 'apellido del alumno',
+            'apellido', 'apellidos', 'last_name', 'apellido del alumno', 'id_apellido',
         ],
         'birth_date' => [
             'fecha nacimiento', 'fecha_nacimiento', 'fec nac', 'fec_nac', 'birth_date', 'fecha de nacimiento', 'fnac',
+            'nacimiento', 'f_nac', 'f nac', 'f. nac.',
         ],
         'dni' => [
-            'dni', 'documento', 'documento identidad', 'documento_identidad', 'cuil', 'doc',
+            'dni', 'documento', 'documento identidad', 'documento_identidad', 'cuil', 'doc', 'id_dni',
         ],
         'school_name' => [
             'escuela', 'establecimiento', 'institución', 'institucion', 'nombre escuela', 'escuela nombre',
@@ -94,19 +101,57 @@ class ImportParserService
         ],
     ];
 
+    private const HEALTH_COLUMNS = [
+        'first_name' => [
+            'nombre', 'nombres', 'primer nombre', 'primer_nombre', 'first_name', 'nombre del niño', 'nombre niño',
+            'id_nombre',
+        ],
+        'last_name' => [
+            'apellido', 'apellidos', 'last_name', 'apellido del niño', 'apellido niño', 'id_apellido',
+        ],
+        'birth_date' => [
+            'fecha nacimiento', 'fecha_nacimiento', 'fec nac', 'fec_nac', 'birth_date', 'fecha de nacimiento', 'fnac',
+            'nacimiento', 'f_nac', 'f nac', 'f. nac.',
+        ],
+        'dni' => [
+            'dni', 'documento', 'documento identidad', 'documento_identidad', 'cuil', 'doc', 'id_dni',
+        ],
+        'health_center_name' => [
+            'centro de salud', 'centro salud', 'establecimiento', 'salita', 'hospital', 'efector',
+            'centro_de_salud', 'centro_salud',
+        ],
+        'healthy_checkup_current' => [
+            'control sano', 'control de niño sano', 'control niño sano al día', 'control_sano',
+            'control sano al dia', 'control sano al día',
+        ],
+        'vaccines_current' => [
+            'vacunas al dia', 'vacunas al día', 'vacunas', 'vacunas_al_dia',
+        ],
+        'last_checkup_date' => [
+            'fecha ultimo control', 'fecha último control', 'ultimo control', 'último control',
+            'fecha_ultimo_control',
+        ],
+        'observations' => [
+            'observaciones', 'observacion', 'observación', 'notas',
+        ],
+    ];
+
     /**
      * Parsea el archivo y retorna un iterador de filas ya mapeadas a campos internos.
      *
      * @param UploadedFile $file
-     * @param string $source  'civil_registry' | 'education' | 'users'
+     * @param string $source  'civil_registry' | 'education' | 'health' | 'users'
+     * @param string|null $sheetName  Para xlsx/xls con varias hojas: cuál procesar.
+     *                                Null = hoja activa (o único formato para csv/txt).
      * @return \Generator<int, array>  índice de línea (base 1) => datos mapeados
      * @throws \RuntimeException si el archivo no puede leerse o no tiene cabeceras reconocidas
      */
-    public function parse(UploadedFile $file, string $source): \Generator
+    public function parse(UploadedFile $file, string $source, ?string $sheetName = null): \Generator
     {
         $columnMap = match ($source) {
             'civil_registry' => self::CIVIL_REGISTRY_COLUMNS,
             'users'          => self::USER_COLUMNS,
+            'health'         => self::HEALTH_COLUMNS,
             default          => self::EDUCATION_COLUMNS,
         };
 
@@ -114,9 +159,28 @@ class ImportParserService
 
         return match ($extension) {
             'csv', 'txt'  => $this->parseCsv($file->getRealPath(), $columnMap),
-            'xlsx', 'xls' => $this->parseExcel($file->getRealPath(), $columnMap),
+            'xlsx', 'xls' => $this->parseExcel($file->getRealPath(), $columnMap, $sheetName),
             default       => throw new \RuntimeException("Formato de archivo no soportado: {$extension}. Use CSV, TXT o Excel."),
         };
+    }
+
+    /**
+     * Lista los nombres de hoja de un xlsx/xls sin cargar el workbook completo.
+     * Para CSV/TXT devuelve [null] (formato sin concepto de hoja).
+     *
+     * @return array<int, string|null>
+     */
+    public function listSheets(string $path, string $extension): array
+    {
+        $extension = strtolower($extension);
+
+        if (! in_array($extension, ['xlsx', 'xls'], true)) {
+            return [null];
+        }
+
+        $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReaderForFile($path);
+
+        return $reader->listWorksheetNames($path);
     }
 
     // ─── Parsers internos ─────────────────────────────────────────────────────────
@@ -161,11 +225,22 @@ class ImportParserService
         fclose($handle);
     }
 
-    private function parseExcel(string $path, array $columnMap): \Generator
+    private function parseExcel(string $path, array $columnMap, ?string $sheetName = null): \Generator
     {
         // Requiere maatwebsite/excel instalado (composer require maatwebsite/excel)
-        $spreadsheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($path);
-        $sheet = $spreadsheet->getActiveSheet();
+        if ($sheetName !== null) {
+            $reader = \PhpOffice\PhpSpreadsheet\IOFactory::createReaderForFile($path);
+            $reader->setLoadSheetsOnly($sheetName);
+            $spreadsheet = $reader->load($path);
+            $sheet = $spreadsheet->getSheetByName($sheetName);
+            if ($sheet === null) {
+                throw new \RuntimeException("La hoja \"{$sheetName}\" no existe en el archivo.");
+            }
+        } else {
+            $spreadsheet = \PhpOffice\PhpSpreadsheet\IOFactory::load($path);
+            $sheet = $spreadsheet->getActiveSheet();
+        }
+
         $rows = $sheet->toArray(null, true, true, false);
 
         if (empty($rows)) {
@@ -231,7 +306,7 @@ class ImportParserService
 
         $value = trim((string) $value);
 
-        if ($field === 'birth_date') {
+        if ($field === 'birth_date' || $field === 'last_checkup_date') {
             return $this->parseDate($value);
         }
 
@@ -240,7 +315,27 @@ class ImportParserService
             return preg_replace('/[\s.]/', '', $value);
         }
 
+        if (in_array($field, ['healthy_checkup_current', 'vaccines_current'])) {
+            return $this->parseNullableBoolean($value);
+        }
+
         return $value;
+    }
+
+    /**
+     * 'sí/no', '1/0', 'true/false', 'al dia/atrasado' → bool. Cualquier otro
+     * texto se descarta como null ("sin dato") en vez de asumir false — el dato
+     * ausente o ambiguo no equivale a "no está al día".
+     */
+    private function parseNullableBoolean(string $value): ?bool
+    {
+        $normalized = mb_strtolower(trim($value));
+
+        return match ($normalized) {
+            'si', 'sí', 's', '1', 'true', 'x', 'al dia', 'al día' => true,
+            'no', 'n', '0', 'false', 'atrasado', 'atrasada' => false,
+            default => null,
+        };
     }
 
     private function parseDate(string $value): ?string

@@ -20,6 +20,13 @@ class UpdateEducationRecordRequest extends FormRequest
     public function rules(): array
     {
         return [
+            // Reasignación de institución: SOLO el admin puede mover un registro
+            // educativo a otra institución (una institución no puede "robarse" un
+            // niño de otra). Se valida el tipo/estado en withValidator().
+            'institution_id' => $this->user()->hasRole('admin')
+                ? ['sometimes', 'uuid', 'exists:institutions,id']
+                : ['prohibited'],
+
             'school_name'    => ['sometimes', 'string', 'max:200'],
             'grade_or_year'  => ['nullable', 'string', 'max:50'],
 
@@ -44,7 +51,21 @@ class UpdateEducationRecordRequest extends FormRequest
             'absences_count.integer'    => 'La cantidad de inasistencias debe ser un número entero.',
             'grade.required_with'       => 'Indicá el grado/sala correspondiente al nivel elegido.',
             'attendance_total_days.gte' => 'Los días totales no pueden ser menores a los días asistidos.',
+            'institution_id.prohibited' => 'Solo el administrador puede cambiar la institución de un registro.',
         ];
+    }
+
+    /**
+     * Institución contra la que se validan nivel/grado: la nueva elegida por el
+     * admin (si viene en el request), o la actual del registro.
+     */
+    private function effectiveInstitution(): ?\App\Models\Institution
+    {
+        if ($this->filled('institution_id')) {
+            return \App\Models\Institution::find($this->input('institution_id'));
+        }
+
+        return $this->route('child')?->educationRecord?->institution ?? $this->user()->institution;
     }
 
     /**
@@ -55,13 +76,26 @@ class UpdateEducationRecordRequest extends FormRequest
     public function withValidator($validator): void
     {
         $validator->after(function ($validator) {
+            $institution = $this->effectiveInstitution();
+
+            // Reasignación (admin): la institución destino debe ser educativa y activa.
+            if ($this->filled('institution_id')) {
+                if (! $institution || ! $institution->is_active) {
+                    $validator->errors()->add('institution_id', 'La institución elegida no existe o está desactivada.');
+                    return;
+                }
+                if ($institution->type !== 'educacion') {
+                    $validator->errors()->add('institution_id', 'La institución elegida no es de tipo educación.');
+                    return;
+                }
+            }
+
             if (! $this->has('level') || ! $this->input('level')) {
                 return;
             }
 
-            $level       = $this->input('level');
-            $institution = $this->route('child')?->educationRecord?->institution ?? $this->user()->institution;
-            $maxGrade    = $institution?->maxGradeForLevel($level);
+            $level    = $this->input('level');
+            $maxGrade = $institution?->maxGradeForLevel($level);
 
             if ($maxGrade === null) {
                 $validator->errors()->add('level', 'Esta institución no ofrece este nivel educativo.');

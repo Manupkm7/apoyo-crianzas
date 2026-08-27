@@ -7,6 +7,7 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
@@ -57,7 +58,7 @@ class EducationRecord extends Model
     {
         return LogOptions::defaults()
             ->logOnly([
-                'school_name', 'grade_or_year', 'level', 'grade',
+                'institution_id', 'school_name', 'grade_or_year', 'level', 'grade',
                 'absences_count', 'attendance_present_days', 'attendance_total_days', 'attendance_period_label',
                 'is_enrolled', 'observations',
             ])
@@ -77,6 +78,38 @@ class EducationRecord extends Model
     public function observationEntries(): HasMany
     {
         return $this->hasMany(EducationObservation::class)->latest();
+    }
+
+    /**
+     * Reportes bimestrales (histórico). El registro en sí es la foto vigente;
+     * estos son el detalle por bimestre, del más reciente al más viejo.
+     */
+    public function periodReports(): HasMany
+    {
+        return $this->hasMany(EducationPeriodReport::class)
+            ->orderByDesc('year')
+            ->orderByDesc('bimester');
+    }
+
+    /**
+     * El último bimestre informado (mayor año, luego mayor bimestre). Es lo que
+     * mira el SAT además de la foto vigente: si el último reporte dice "no
+     * escolarizado" o inasistencias elevadas, hay alerta aunque el registro
+     * vigente diga lo contrario. Ver App\Services\ChildAlertEvaluator.
+     *
+     * Se resuelve con comparación de fila `(year, bimester) = (subconsulta)` en
+     * vez de hasOneOfMany porque este último agrega MAX(id) como desempate y el
+     * id es UUID (Postgres no tiene max(uuid)).
+     */
+    public function latestPeriodReport(): HasOne
+    {
+        return $this->hasOne(EducationPeriodReport::class)->whereRaw(
+            '(education_period_reports.year, education_period_reports.bimester) = '
+            . '(select t.year, t.bimester from education_period_reports as t '
+            . 'where t.education_record_id = education_period_reports.education_record_id '
+            . 'and t.deleted_at is null '
+            . 'order by t.year desc, t.bimester desc limit 1)'
+        );
     }
 
     /**

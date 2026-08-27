@@ -2,6 +2,7 @@
 
 namespace App\Models;
 
+use App\Services\Import\ImportMatchingService;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
@@ -36,6 +37,8 @@ class Child extends Model
         'birth_date',
         'dni',
         'dni_hash',
+        'name_normalized',
+        'name_no_accents',
         'notes',
         'created_by',
         'updated_by',
@@ -47,6 +50,21 @@ class Child extends Model
             'birth_date' => 'date',
             'dni'        => 'encrypted', // AES-256 vía APP_KEY; se cifra al guardar, se descifra al leer
         ];
+    }
+
+    /**
+     * Mantiene name_normalized/name_no_accents sincronizados con first_name/last_name
+     * — se usan para buscar candidatos por nombre en ImportMatchingService::matchChild()
+     * sin tener que normalizar en cada consulta.
+     */
+    protected static function booted(): void
+    {
+        static::saving(function (Child $child) {
+            if ($child->isDirty('first_name') || $child->isDirty('last_name') || $child->name_normalized === null) {
+                $child->name_normalized = ImportMatchingService::normalizeName($child->first_name, $child->last_name);
+                $child->name_no_accents = ImportMatchingService::normalizeNameNoAccents($child->first_name, $child->last_name);
+            }
+        });
     }
 
     public function getActivitylogOptions(): LogOptions
@@ -81,6 +99,16 @@ class Child extends Model
     public function healthRecord(): HasOne
     {
         return $this->hasOne(HealthRecord::class);
+    }
+
+    /**
+     * Gestiones de alertas del SAT (histórico). Ver App\Services\ChildAlertEvaluator:
+     * las alertas se calculan al vuelo; acá solo se guarda cuándo se marcaron como
+     * "en seguimiento". Sin orden por defecto — cada consumidor ordena como necesita.
+     */
+    public function alertAcknowledgements(): HasMany
+    {
+        return $this->hasMany(AlertAcknowledgement::class);
     }
 
     public function birthRecord(): HasOne

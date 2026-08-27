@@ -49,19 +49,20 @@ class EducationRecordPolicy
     }
 
     /**
-     * ¿Puede este usuario crear un registro educativo para un niño?
+     * ¿Puede este usuario vincular un niño a una institución educativa creando su
+     * registro?
      *
-     * Solo usuarios de instituciones de tipo educacion (y admin como caso especial).
+     * SOLO el admin. Una institución no puede "adoptar" por su cuenta un niño que
+     * ya existe en el sistema — decidir a qué institución pertenece un niño es
+     * competencia del admin (lo hace desde el perfil del niño).
+     *
+     * El caso de una institución que registra un niño NUEVO se resuelve aparte:
+     * ChildController::store le crea el registro mínimo de su sector directamente
+     * (auto-vínculo), sin pasar por esta Policy.
      */
     public function create(SystemActor $user): bool
     {
-        if ($user->hasRole('admin')) {
-            return true;
-        }
-
-        return $user->isInstitutionalUser()
-            && $user->institutionType() === 'educacion'
-            && $user->can('ninos.gestionar');
+        return $user->hasRole('admin');
     }
 
     /**

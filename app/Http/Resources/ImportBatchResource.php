@@ -11,20 +11,38 @@ class ImportBatchResource extends JsonResource
 {
     public function toArray(Request $request): array
     {
+        $counts = $this->rows()
+            ->selectRaw("
+                SUM(CASE WHEN status = 'matched'         THEN 1 ELSE 0 END) as matched,
+                SUM(CASE WHEN status = 'partial_match'   THEN 1 ELSE 0 END) as partial,
+                SUM(CASE WHEN status = 'no_match'        THEN 1 ELSE 0 END) as no_match,
+                SUM(CASE WHEN status = 'manual_resolved' THEN 1 ELSE 0 END) as resolved,
+                SUM(CASE WHEN status = 'skipped'         THEN 1 ELSE 0 END) as skipped,
+                SUM(CASE WHEN status = 'error'           THEN 1 ELSE 0 END) as errors
+            ")
+            ->first();
+
         return [
             'id'                => $this->id,
             'source'            => $this->source,
-            'source_label'      => $this->source === 'civil_registry' ? 'Registro Civil' : 'Educación',
+            'source_label'      => match ($this->source) {
+                'civil_registry' => 'Registro Civil',
+                'health'         => 'Salud',
+                default          => 'Educación',
+            },
             'status'            => $this->status,
             'original_filename' => $this->original_filename,
+            'sheet_name'        => $this->sheet_name,
 
             'rows' => [
-                'total'      => $this->total_rows,
-                'matched'    => $this->matched_rows,
-                'partial'    => $this->partial_rows,
-                'no_match'   => $this->no_match_rows,
-                'errors'     => $this->error_rows,
-                'pending_review' => $this->partial_rows + $this->no_match_rows,
+                'total'          => $this->total_rows,
+                'matched'        => (int) $counts->matched,
+                'partial'        => (int) $counts->partial,
+                'no_match'       => (int) $counts->no_match,
+                'resolved'       => (int) $counts->resolved,
+                'skipped'        => (int) $counts->skipped,
+                'errors'         => (int) $counts->errors,
+                'pending_review' => (int) $counts->partial + (int) $counts->no_match,
             ],
 
             // Solo se muestra si falló

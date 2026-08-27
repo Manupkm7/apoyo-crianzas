@@ -22,6 +22,7 @@ class ImportRow extends Model
         'match_notes',
         'matched_row_id',
         'child_id',
+        'suggested_child_id',
         'resolved_by',
         'resolved_at',
         'error_message',
@@ -52,6 +53,11 @@ class ImportRow extends Model
         return $this->belongsTo(Child::class);
     }
 
+    public function suggestedChild(): BelongsTo
+    {
+        return $this->belongsTo(Child::class, 'suggested_child_id');
+    }
+
     public function resolver(): BelongsTo
     {
         return $this->belongsTo(User::class, 'resolved_by');
@@ -75,5 +81,10 @@ class ImportRow extends Model
     public function isFromEducation(): bool
     {
         return $this->batch->source === 'education';
+    }
+
+    public function isFromHealth(): bool
+    {
+        return $this->batch->source === 'health';
     }
 }

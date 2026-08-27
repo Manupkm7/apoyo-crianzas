@@ -92,6 +92,35 @@ services:
         depends_on:
             - pgsql
             - redis
+
+    # ------------------------------------------------------------------
+    # queue-worker — procesa los jobs encolados (importaciones masivas, etc.)
+    # Reutiliza la misma imagen que laravel.test (ya construida por ese servicio)
+    # y el mismo código vía el volumen compartido, corriendo 'queue:work' en vez
+    # de 'artisan serve'. Sin este servicio, QUEUE_CONNECTION=database deja los
+    # jobs en estado 'pending' para siempre — nadie los consume.
+    #
+    # --tries=1: si un job falla, va a failed_jobs en vez de reintentarse solo
+    # (mismo criterio que ya usan los jobs de import, que declaran tries=1).
+    # ------------------------------------------------------------------
+    queue-worker:
+        image: 'sail-8.5/app'
+        environment:
+            WWWUSER: '${WWWUSER}'
+            LARAVEL_SAIL: 1
+        volumes:
+            - '.:/var/www/html'
+        networks:
+            - sail
+        depends_on:
+            - laravel.test
+            - pgsql
+            - redis
+        # Sin 'entrypoint:' propio: se mantiene el "start-container" de la imagen
+        # (ajusta permisos del usuario 'sail' al UID del host) y 'command' pasa
+        # a ser los argumentos que ese script ejecuta al final vía gosu.
+        command: ['php', 'artisan', 'queue:work', '--tries=1', '--sleep=3']
+        restart: unless-stopped
     pgsql:
         image: 'postgres:16-alpine'
         ports:

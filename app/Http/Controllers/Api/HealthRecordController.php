@@ -63,6 +63,20 @@ class HealthRecordController extends Controller
         // targetInstitution() ya validó que sea válida y de tipo 'salud'.
         $institutionId = $request->targetInstitution()->id;
 
+        // Si esta institución ya tuvo un registro que luego se desvinculó
+        // (soft delete), se restaura en vez de crear uno nuevo — así no choca
+        // con el unique (child_id, institution_id) y se recupera el historial.
+        $trashed = $child->healthRecord()->onlyTrashed()->where('institution_id', $institutionId)->first();
+        if ($trashed) {
+            $trashed->restore();
+            $trashed->update([
+                ...$request->validated(),
+                'updated_by' => $request->user()->auditId(),
+            ]);
+
+            return response()->json(new HealthRecordResource($trashed->fresh()));
+        }
+
         // Un niño solo puede tener un registro por institución de salud
         if ($child->healthRecord()->where('institution_id', $institutionId)->exists()) {
             return response()->json([
@@ -74,7 +88,7 @@ class HealthRecordController extends Controller
             ...$request->validated(),
             'child_id'       => $child->id,
             'institution_id' => $institutionId,
-            'created_by'     => $request->user()->id,
+            'created_by'     => $request->user()->auditId(),
         ]);
 
         return (new HealthRecordResource($record))
@@ -97,12 +111,20 @@ class HealthRecordController extends Controller
 
         $this->authorize('update', $record);
 
+        $data = $request->validated();
+
+        // Al reasignar institución (solo admin) sin mandar un nombre de centro
+        // explícito, se toma el de la nueva institución.
+        if (! empty($data['institution_id']) && empty($data['health_center_name'])) {
+            $data['health_center_name'] = \App\Models\Institution::find($data['institution_id'])?->name ?? $record->health_center_name;
+        }
+
         $record->update([
-            ...$request->validated(),
-            'updated_by' => $user->id,
+            ...$data,
+            'updated_by' => $user->auditId(),
         ]);
 
-        return response()->json(new HealthRecordResource($record));
+        return response()->json(new HealthRecordResource($record->fresh()));
     }
 
     /**
@@ -116,7 +138,7 @@ class HealthRecordController extends Controller
 
         $this->authorize('delete', $record);
 
-        $record->update(['updated_by' => $request->user()->id]);
+        $record->update(['updated_by' => $request->user()->auditId()]);
         $record->delete();
 
         return response()->json([

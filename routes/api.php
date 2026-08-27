@@ -2,14 +2,17 @@
 
 use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BirthRecordController;
+use App\Http\Controllers\Api\ChildAlertController;
 use App\Http\Controllers\Api\ChildController;
 use App\Http\Controllers\Api\DatabaseExportController;
 use App\Http\Controllers\Api\DeathRecordController;
 use App\Http\Controllers\Api\EducationDashboardController;
 use App\Http\Controllers\Api\EducationObservationController;
+use App\Http\Controllers\Api\EducationPeriodReportController;
 use App\Http\Controllers\Api\EducationRecordController;
 use App\Http\Controllers\Api\GeoController;
 use App\Http\Controllers\Api\HealthObservationController;
+use App\Http\Controllers\Api\HealthPeriodReportController;
 use App\Http\Controllers\Api\HealthRecordController;
 use App\Http\Controllers\Api\ImportController;
 use App\Http\Controllers\Api\InstitutionAuthController;
@@ -70,6 +73,11 @@ Route::prefix('v1')->group(function () {
         // Sesión del actor actual (User o Institution, ver AuthController::me)
         Route::post('logout', [AuthController::class, 'logout']);
         Route::get('me', [AuthController::class, 'me'])->name('me');
+
+        // La institución autenticada cambia su propia contraseña — típicamente
+        // después de que el admin le reseteó la clave (que es aleatoria) para
+        // dejar una que pueda recordar. Ver InstitutionAuthController.
+        Route::post('institution/change-password', [InstitutionAuthController::class, 'changePassword']);
 
         // -----------------------------------------------------------------------
         // ABM de Instituciones
@@ -150,21 +158,29 @@ Route::prefix('v1')->group(function () {
         Route::get('database-export', [DatabaseExportController::class, 'download']);
 
         // -----------------------------------------------------------------------
-        // Importaciones masivas (Registro Civil y Educación)
+        // Importaciones masivas (Registro Civil, Educación y Salud)
         // - GET    /api/v1/imports                                 → listar batches
-        // - POST   /api/v1/imports                                 → subir archivo (CSV, TXT o Excel) [solo admin]
+        // - POST   /api/v1/imports/preview                        → subir archivo y listar sus hojas [solo admin]
+        // - POST   /api/v1/imports                                 → crear un batch por hoja asignada [solo admin]
         // - GET    /api/v1/imports/template?source=&format=        → descargar plantilla (xlsx|csv|txt) [solo admin]
         // - GET    /api/v1/imports/{batch}                         → detalle de batch
+        // - GET    /api/v1/imports/{batch}/siblings                 → otras hojas del mismo archivo subido
         // - GET    /api/v1/imports/{batch}/rows                    → filas (?status=partial_match|no_match|...)
         // - PATCH  /api/v1/imports/{batch}/rows/{row}/resolve      → resolver fila [solo admin]
+        // - POST   /api/v1/imports/{batch}/rows/bulk-resolve        → crear niño nuevo por cada fila 'no_match' [solo admin]
+        // - POST   /api/v1/imports/{batch}/rematch                  → recomparar contra una hoja elegida a mano [solo admin]
         // -----------------------------------------------------------------------
         Route::prefix('imports')->group(function () {
             Route::get('/',                                [ImportController::class, 'index']);
+            Route::post('/preview',                        [ImportController::class, 'preview']);
             Route::post('/',                               [ImportController::class, 'store']);
             Route::get('/template',                        [ImportController::class, 'template']);
             Route::get('/{batch}',                         [ImportController::class, 'show']);
+            Route::get('/{batch}/siblings',                [ImportController::class, 'siblings']);
             Route::get('/{batch}/rows',                    [ImportController::class, 'rows']);
             Route::patch('/{batch}/rows/{row}/resolve',    [ImportController::class, 'resolveRow']);
+            Route::post('/{batch}/rows/bulk-resolve',      [ImportController::class, 'bulkResolveNoMatch']);
+            Route::post('/{batch}/rematch',                [ImportController::class, 'rematchBatch']);
         });
 
         // -----------------------------------------------------------------------
@@ -203,6 +219,13 @@ Route::prefix('v1')->group(function () {
             Route::get('education-record/observations', [EducationObservationController::class, 'index']);
             Route::post('education-record/observations', [EducationObservationController::class, 'store']);
 
+            // Reportes bimestrales del registro educativo (histórico consultable
+            // por año/bimestre — el registro en sí sigue siendo la foto vigente).
+            Route::get('education-record/periods', [EducationPeriodReportController::class, 'index']);
+            Route::post('education-record/periods', [EducationPeriodReportController::class, 'store']);
+            Route::patch('education-record/periods/{report}', [EducationPeriodReportController::class, 'update']);
+            Route::delete('education-record/periods/{report}', [EducationPeriodReportController::class, 'destroy']);
+
             // -----------------------------------------------------------------------
             // Registro de salud de un niño (uno por institución de salud)
             // - GET    /api/v1/children/{child}/health-record   → ver registro
@@ -219,6 +242,21 @@ Route::prefix('v1')->group(function () {
             // Solo la institución de salud puede crear entradas (no representantes).
             Route::get('health-record/observations', [HealthObservationController::class, 'index']);
             Route::post('health-record/observations', [HealthObservationController::class, 'store']);
+
+            // Reportes bimestrales del registro de salud (histórico consultable
+            // por año/bimestre — el registro en sí sigue siendo la foto vigente).
+            Route::get('health-record/periods', [HealthPeriodReportController::class, 'index']);
+            Route::post('health-record/periods', [HealthPeriodReportController::class, 'store']);
+            Route::patch('health-record/periods/{report}', [HealthPeriodReportController::class, 'update']);
+            Route::delete('health-record/periods/{report}', [HealthPeriodReportController::class, 'destroy']);
+
+            // -----------------------------------------------------------------------
+            // Gestión de alertas del SAT — marcar una alerta como "en seguimiento"
+            // (se coordinó un control fuera de la plataforma). {type} es uno de
+            // no_escolarizado | inasistencias_elevadas | control_atrasado | vacunas_atrasadas.
+            // Acceso: institución dueña del registro del sector, o admin.
+            // -----------------------------------------------------------------------
+            Route::post('alerts/{type}/acknowledge', [ChildAlertController::class, 'acknowledge']);
 
             // -----------------------------------------------------------------------
             // Registro de nacimiento de un niño (uno por niño, mayormente vía importación)

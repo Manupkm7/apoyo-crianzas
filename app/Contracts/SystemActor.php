@@ -14,6 +14,14 @@ namespace App\Contracts;
  */
 interface SystemActor
 {
+    /**
+     * Id para las columnas de auditoría created_by / updated_by, que son FK a
+     * la tabla users. Un User devuelve su id; una Institution devuelve null
+     * (no está en users — su autoría queda registrada en activity_log como
+     * causer polimórfico, ver config/activitylog.php auth_driver = 'sanctum').
+     */
+    public function auditId(): ?string;
+
     public function isAdmin(): bool;
 
     public function isCoordinator(): bool;
@@ -25,6 +33,8 @@ interface SystemActor
     public function isInstitutionalUser(): bool;
 
     public function canBypassRls(): bool;
+
+    public function hasFullUserImportAccess(): bool;
 
     public function institutionType(): ?string;
 }

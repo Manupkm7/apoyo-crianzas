@@ -7,6 +7,7 @@ use App\Models\Institution;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Hash;
+use Illuminate\Validation\Rules\Password;
 use Illuminate\Validation\ValidationException;
 
 /**
@@ -85,5 +86,52 @@ class InstitutionAuthController extends Controller
                 'password_must_change'  => $institution->password_must_change,
             ],
         ]);
+    }
+
+    /**
+     * La institución autenticada cambia su propia contraseña.
+     *
+     * Pensado para el caso "el admin me reseteó la clave y me quedó una cadena
+     * aleatoria imposible de recordar": la institución entra con esa clave y la
+     * reemplaza por una propia. Requiere la contraseña actual. Al cambiarla se
+     * baja el flag password_must_change y se cierran las demás sesiones.
+     */
+    public function changePassword(Request $request): JsonResponse
+    {
+        $institution = $request->user();
+
+        if (! $institution instanceof Institution) {
+            abort(403, 'Solo una institución autenticada puede cambiar su propia contraseña.');
+        }
+
+        $validated = $request->validate([
+            'current_password' => ['required', 'string'],
+            // Misma política que el resto del sistema (StoreUserRequest): datos de menores.
+            'password'         => ['required', 'string', 'confirmed', 'different:current_password',
+                Password::min(12)->mixedCase()->numbers()->symbols()],
+        ]);
+
+        if (! $institution->password || ! Hash::check($validated['current_password'], $institution->password)) {
+            throw ValidationException::withMessages([
+                'current_password' => ['La contraseña actual es incorrecta.'],
+            ]);
+        }
+
+        $institution->update([
+            'password'             => $validated['password'],
+            'password_must_change' => false,
+        ]);
+
+        // Cerramos el resto de las sesiones de la institución; la actual sigue viva.
+        if ($currentTokenId = $institution->currentAccessToken()?->getKey()) {
+            $institution->tokens()->whereKeyNot($currentTokenId)->delete();
+        }
+
+        activity('auth')
+            ->causedBy($institution)
+            ->withProperties(['ip' => $request->ip()])
+            ->log('Cambio de contraseña institucional');
+
+        return response()->json(['message' => 'Contraseña actualizada correctamente.']);
     }
 }

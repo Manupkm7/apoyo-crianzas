@@ -9,9 +9,10 @@ use Illuminate\Http\Resources\Json\JsonResource;
 /**
  * ImportRowResource — datos de una fila de importación para la cola de revisión manual.
  *
- * Descifra raw_data para mostrar nombre/apellido en su casing original.
- * No expone DNIs en ningún campo de la respuesta — solo los datos necesarios para
- * que el operador decida si dos registros corresponden a la misma persona.
+ * Descifra raw_data y expone todos los campos relevantes del archivo original: el
+ * operador tiene que poder identificar a quién corresponde la fila sin abrir el
+ * Excel. Endpoint restringido a admin/coordinador (reportes.ver | importaciones.gestionar),
+ * que ya tienen acceso al DNI de niños/representantes en el resto del sistema.
  */
 class ImportRowResource extends JsonResource
 {
@@ -24,18 +25,45 @@ class ImportRowResource extends JsonResource
             'id'               => $this->id,
             'status'           => $this->status,
             'source'           => $this->whenLoaded('batch', fn () => $this->batch->source),
-            'source_label'     => $this->whenLoaded('batch', fn () =>
-                $this->batch->source === 'civil_registry' ? 'Registro Civil' : 'Educación'
-            ),
+            'source_label'     => $this->whenLoaded('batch', fn () => match ($this->batch->source) {
+                'civil_registry' => 'Registro Civil',
+                'health'         => 'Salud',
+                default          => 'Educación',
+            }),
 
             // Nombre y fecha en su forma original (casing del archivo)
             'first_name'       => $raw['first_name'] ?? null,
             'last_name'        => $raw['last_name'] ?? null,
+            // Respaldo: si raw_data no trae nombre (ej. filas de antes de un fix de parseo),
+            // esta columna siempre estuvo bien calculada desde el archivo, aunque sin el
+            // casing/tildes originales exactos.
+            'name_fallback'    => $this->name_normalized,
             'birth_date'       => $this->birth_date?->toDateString(),
+            'dni'              => $raw['dni'] ?? null,
 
-            // Extra contextual según la fuente (no sensible)
-            'school_name'          => $raw['school_name'] ?? null,
-            'birth_establishment'  => $raw['birth_establishment'] ?? null,
+            // Registro civil
+            'mother_name'         => $raw['mother_name'] ?? null,
+            'mother_dni'          => $raw['mother_dni'] ?? null,
+            'father_name'         => $raw['father_name'] ?? null,
+            'father_dni'          => $raw['father_dni'] ?? null,
+            'address'             => $raw['address'] ?? null,
+            'birth_establishment' => $raw['birth_establishment'] ?? null,
+
+            // Educación
+            'school_name'    => $raw['school_name'] ?? null,
+            'grade_or_year'  => $raw['grade_or_year'] ?? null,
+
+            // Salud
+            'health_center_name'      => $raw['health_center_name'] ?? null,
+            'healthy_checkup_current' => $raw['healthy_checkup_current'] ?? null,
+            'vaccines_current'        => $raw['vaccines_current'] ?? null,
+            'last_checkup_date'       => $raw['last_checkup_date'] ?? null,
+            'observations'            => $raw['observations'] ?? null,
+
+            // Todas las columnas tal como venían en el archivo original (cabecera => valor),
+            // sin filtrar por si las reconocemos o no. Respaldo para cuando el archivo trae
+            // columnas fuera de lo mapeado — el operador ve el dato crudo sin abrir el Excel.
+            'raw_columns' => $raw['_original_columns'] ?? [],
 
             // Resultado del matching
             'match_confidence' => $this->match_confidence,
@@ -52,8 +80,12 @@ class ImportRowResource extends JsonResource
                     'id'               => $this->matchedRow->id,
                     'first_name'       => $matchedRaw['first_name'] ?? null,
                     'last_name'        => $matchedRaw['last_name'] ?? null,
+                    'name_fallback'    => $this->matchedRow->name_normalized,
                     'birth_date'       => $this->matchedRow->birth_date?->toDateString(),
+                    'dni'              => $matchedRaw['dni'] ?? null,
                     'school_name'      => $matchedRaw['school_name'] ?? null,
+                    'mother_name'      => $matchedRaw['mother_name'] ?? null,
+                    'father_name'      => $matchedRaw['father_name'] ?? null,
                     'match_confidence' => $this->matchedRow->match_confidence,
                 ];
             }),
@@ -61,6 +93,20 @@ class ImportRowResource extends JsonResource
             // Niño vinculado (si ya fue resuelto)
             'child' => $this->whenLoaded('child', fn () =>
                 $this->child ? new ChildResource($this->child) : null
+            ),
+
+            // Sugerencia de matchChild() (DNI+nombre+apellido) cuando el vínculo
+            // no es lo bastante seguro como para resolverse solo — el operador
+            // decide si aceptarla o no. Distinto de 'child', que solo se completa
+            // cuando la fila ya está resuelta (auto o manualmente).
+            'suggested_child' => $this->whenLoaded('suggestedChild', fn () =>
+                $this->suggestedChild ? [
+                    'id'         => $this->suggestedChild->id,
+                    'first_name' => $this->suggestedChild->first_name,
+                    'last_name'  => $this->suggestedChild->last_name,
+                    'birth_date' => $this->suggestedChild->birth_date?->toDateString(),
+                    'dni'        => $this->suggestedChild->dni,
+                ] : null
             ),
 
             // Quién y cuándo resolvió esta fila manualmente

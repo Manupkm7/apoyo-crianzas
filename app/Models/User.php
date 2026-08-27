@@ -36,6 +36,16 @@ class User extends Authenticatable implements SystemActor
         'is_institution_head',
         'created_by',
         'updated_by',
+
+        // Bloqueo por intentos fallidos y registro de acceso. AuthController y el
+        // trait HasLoginLockout los setean vía $user->update([...]); sin estar en
+        // $fillable, Laravel los descartaba en silencio y el bloqueo de cuenta
+        // nunca llegaba a persistirse. No se exponen por la API: Store/UpdateUserRequest
+        // no los validan y los controllers usan $request->validated().
+        'failed_login_attempts',
+        'locked_until',
+        'last_login_at',
+        'last_login_ip',
     ];
 
     protected $hidden = [
@@ -71,6 +81,14 @@ class User extends Authenticatable implements SystemActor
     public function institution(): BelongsTo
     {
         return $this->belongsTo(Institution::class);
+    }
+
+    /**
+     * Id para columnas de auditoría created_by / updated_by (FK a users).
+     */
+    public function auditId(): ?string
+    {
+        return $this->id;
     }
 
     /**
@@ -130,9 +148,8 @@ class User extends Authenticatable implements SystemActor
      * Quien NO tenga esto (el responsable de institución, vía
      * 'representantes.gestionar') solo puede subir para su propia institución
      * y solo generar representantes — ver UserImportController::rolesAllowedFor().
+     *
+     * La implementación vive en HasInstitutionalRoleChecks para que también
+     * aplique al actor Institution (login institucional).
      */
-    public function hasFullUserImportAccess(): bool
-    {
-        return $this->can('usuarios.gestionar') || $this->can('usuarios.carga_masiva');
-    }
 }

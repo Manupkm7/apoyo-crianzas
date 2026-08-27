@@ -55,6 +55,19 @@ class Institution extends Authenticatable implements SystemActor
         'secundario_years',
         'created_by',
         'updated_by',
+
+        // Login institucional y bloqueo por intentos fallidos. Los setean
+        // InstitutionController::store / ::resetPassword y el trait HasLoginLockout
+        // vía asignación masiva; sin estar acá Laravel los descartaba en silencio
+        // y la contraseña de la institución nunca se persistía (quedaba NULL).
+        // No se exponen por PATCH /institutions: UpdateInstitutionRequest no los
+        // valida y el controller usa solo $request->validated().
+        'password',
+        'password_must_change',
+        'failed_login_attempts',
+        'locked_until',
+        'last_login_at',
+        'last_login_ip',
     ];
 
     protected $hidden = [
@@ -119,6 +132,29 @@ class Institution extends Authenticatable implements SystemActor
     public function getInstitutionIdAttribute(): string
     {
         return $this->id;
+    }
+
+    /**
+     * Cuando el actor autenticado es la propia Institution, "su" institución es
+     * ella misma. Igual que getInstitutionIdAttribute(), esto deja que los
+     * controllers, requests y policies que leen $user->institution (ChildController,
+     * StoreEducationRecordRequest, etc.) funcionen sin ramificar por tipo de actor.
+     * Es un accessor, no una relación: no se puede eager-loadear ni aparece en el
+     * JSON (no está en $appends).
+     */
+    public function getInstitutionAttribute(): self
+    {
+        return $this;
+    }
+
+    /**
+     * Una Institution no está en la tabla users, así que no puede ir en las
+     * columnas created_by / updated_by (FK a users). Su autoría queda en
+     * activity_log como causer polimórfico.
+     */
+    public function auditId(): ?string
+    {
+        return null;
     }
 
     public function institutionType(): ?string

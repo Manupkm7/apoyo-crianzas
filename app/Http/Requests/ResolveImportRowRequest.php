@@ -22,6 +22,11 @@ class ResolveImportRowRequest extends FormRequest
             // Si se provee, la fila se vincula a ese niño.
             // Si no se provee y action=confirm, se crea un nuevo niño con los datos de la fila.
             'child_id' => ['nullable', 'uuid', 'exists:children,id'],
+
+            // Cuando hay una contraparte (matched_row) y no se provee child_id, con cuál
+            // de las dos filas se identifica al niño nuevo (nombre + fecha de nacimiento) —
+            // 'row' (default) = esta fila, 'matched_row' = la contraparte mostrada al lado.
+            'data_source' => ['nullable', 'in:row,matched_row'],
         ];
     }
 

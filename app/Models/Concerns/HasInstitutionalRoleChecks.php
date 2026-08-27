@@ -51,4 +51,17 @@ trait HasInstitutionalRoleChecks
     {
         return $this->hasRole(['admin', 'coordinador']);
     }
+
+    /**
+     * Carga masiva de usuarios "completa": puede subir para cualquier institución
+     * y generar filas con rol 'institucion' o 'representante'. Lo tienen admin
+     * ('usuarios.gestionar') y coordinador ('usuarios.carga_masiva'). Quien no lo
+     * tenga (responsable de institución / actor Institution, vía
+     * 'representantes.gestionar') solo sube para su propia institución y solo
+     * genera representantes — ver UserImportController::rolesAllowedFor().
+     */
+    public function hasFullUserImportAccess(): bool
+    {
+        return $this->can('usuarios.gestionar') || $this->can('usuarios.carga_masiva');
+    }
 }

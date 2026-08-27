@@ -3,6 +3,7 @@
 namespace App\Http\Controllers\Api;
 
 use App\Http\Controllers\Controller;
+use App\Http\Requests\PreviewImportRequest;
 use App\Http\Requests\ResolveImportRowRequest;
 use App\Http\Requests\StoreImportRequest;
 use App\Http\Resources\ImportBatchResource;
@@ -11,9 +12,11 @@ use App\Jobs\ProcessImportBatch;
 use App\Models\BirthRecord;
 use App\Models\Child;
 use App\Models\EducationRecord;
+use App\Models\HealthRecord;
 use App\Models\ImportBatch;
 use App\Models\ImportRow;
 use App\Services\Import\ImportMatchingService;
+use App\Services\Import\ImportParserService;
 use App\Services\Import\ImportTemplateService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -61,32 +64,73 @@ class ImportController extends Controller
     }
 
     /**
-     * Recibe el archivo, lo guarda, crea el batch y despacha el job de procesamiento.
+     * Otras hojas creadas a partir del mismo archivo subido (mismo storage_path),
+     * para que el operador pueda elegir a mano contra cuál comparar en rematchBatch().
+     */
+    public function siblings(Request $request, ImportBatch $batch): AnonymousResourceCollection
+    {
+        $this->authorizeRead($request);
+
+        $siblings = ImportBatch::where('storage_path', $batch->storage_path)
+            ->where('id', '!=', $batch->id)
+            ->with(['institution'])
+            ->latest()
+            ->get();
+
+        return ImportBatchResource::collection($siblings);
+    }
+
+    /**
+     * Sube el archivo y lo deja guardado en storage sin procesarlo todavía.
+     * Devuelve la lista de hojas detectadas (una entrada virtual para CSV/TXT
+     * o Excel de una sola hoja) para que el frontend arme el formulario de
+     * asignación de fuente/institución por hoja antes de confirmar el envío.
+     */
+    public function preview(PreviewImportRequest $request, ImportParserService $parser): JsonResponse
+    {
+        $file = $request->file('file');
+        $extension = strtolower($file->getClientOriginalExtension());
+
+        $storagePath = $file->store('imports/' . now()->format('Y/m'), 'local');
+
+        $sheets = $parser->listSheets(Storage::path($storagePath), $extension);
+
+        return response()->json([
+            'storage_path'       => $storagePath,
+            'original_filename'  => $file->getClientOriginalName(),
+            'sheets'             => array_map(fn (?string $name) => ['sheet_name' => $name], $sheets),
+        ]);
+    }
+
+    /**
+     * Recibe la asignación de fuente/institución por hoja (del archivo ya
+     * subido vía preview()) y crea UN ImportBatch por hoja, cada uno despachando
+     * su propio job de procesamiento en background.
      *
-     * El job corre en background (queue). La respuesta 202 indica que se aceptó
-     * la solicitud y el procesamiento está en curso — no que ya terminó.
+     * La respuesta 202 indica que se aceptó la solicitud — no que ya terminó.
      */
     public function store(StoreImportRequest $request): JsonResponse
     {
-        $file = $request->file('file');
+        $storagePath = $request->input('storage_path');
+        $originalFilename = $request->input('original_filename');
 
-        // Guardar el archivo en disco antes de despachar el job.
-        // El job lo leerá desde storage y lo eliminará al finalizar.
-        $storagePath = $file->store('imports/' . now()->format('Y/m'), 'local');
+        $batches = collect($request->input('sheets'))->map(function (array $sheet) use ($storagePath, $originalFilename, $request) {
+            $batch = ImportBatch::create([
+                'source'            => $sheet['source'],
+                'institution_id'    => $sheet['institution_id'] ?? null,
+                'original_filename' => $originalFilename,
+                'storage_path'      => $storagePath,
+                'sheet_name'        => $sheet['sheet_name'] ?? null,
+                'uploaded_by'       => $request->user()->id,
+                'status'            => 'pending',
+            ]);
 
-        $batch = ImportBatch::create([
-            'source'            => $request->input('source'),
-            'institution_id'    => $request->input('institution_id'),
-            'original_filename' => $file->getClientOriginalName(),
-            'uploaded_by'       => $request->user()->id,
-            'status'            => 'pending',
-        ]);
+            ProcessImportBatch::dispatch($batch->id, $storagePath, $sheet['sheet_name'] ?? null);
 
-        ProcessImportBatch::dispatch($batch->id, $storagePath);
+            return $batch->load(['institution', 'uploader']);
+        });
 
-        $batch->load(['institution', 'uploader']);
-
-        return (new ImportBatchResource($batch))
+        return ImportBatchResource::collection($batches)
             ->response()
             ->setStatusCode(202); // Accepted — procesamiento en curso
     }
@@ -103,7 +147,7 @@ class ImportController extends Controller
         abort_unless($request->user()->can('importaciones.gestionar'), 403, 'No tiene permiso para descargar plantillas de importación.');
 
         $data = $request->validate([
-            'source' => ['required', 'in:civil_registry,education'],
+            'source' => ['required', 'in:civil_registry,education,health'],
             'format' => ['required', 'in:xlsx,csv,txt'],
         ]);
 
@@ -145,7 +189,7 @@ class ImportController extends Controller
         $status = $request->query('status');
         $validStatuses = ['pending', 'matched', 'partial_match', 'no_match', 'manual_resolved', 'skipped', 'error'];
 
-        $query = $batch->rows()->with(['matchedRow', 'child', 'batch']);
+        $query = $batch->rows()->with(['matchedRow', 'child', 'suggestedChild', 'batch']);
 
         if ($status && in_array($status, $validStatuses)) {
             $query->where('status', $status);
@@ -186,20 +230,143 @@ class ImportController extends Controller
         }
 
         $action = $request->input('action');
+        $childId = $request->input('child_id');
+        $dataSource = $request->input('data_source', 'row');
+
+        // children.birth_date es NOT NULL: si la fila (o la contraparte elegida como
+        // fuente de datos) no la trae, y no se está vinculando a un niño ya existente,
+        // no hay forma de crear el registro. Se valida acá para devolver un mensaje
+        // claro en vez de que explote el insert con un error de base de datos.
+        if ($action !== 'skip' && ! $childId) {
+            $sourceRow = ($dataSource === 'matched_row' && $row->matched_row_id)
+                ? ImportRow::find($row->matched_row_id)
+                : $row;
+            $raw = $sourceRow ? (json_decode($sourceRow->raw_data, true) ?: []) : [];
+            if (empty($raw['birth_date'])) {
+                return response()->json([
+                    'message' => 'La fila de origen elegida no trae fecha de nacimiento, así que no se puede crear un niño nuevo. Vinculala a un niño existente, elegí la otra fuente de datos, o completá la fecha en el archivo original.',
+                ], 422);
+            }
+        }
 
         if ($action === 'skip') {
             $this->skipRow($row, $request->user()->id);
         } else {
-            $this->confirmRow($row, $request->input('child_id'), $request->user()->id, $batch);
+            $this->confirmRow($row, $childId, $request->user()->id, $batch, $dataSource);
         }
 
-        $row->refresh()->load(['matchedRow', 'child', 'batch']);
+        $row->refresh()->load(['matchedRow', 'child', 'suggestedChild', 'batch']);
 
         return response()->json([
             'message' => $action === 'skip'
                 ? 'Fila descartada correctamente.'
                 : 'Fila vinculada correctamente.',
             'row'     => new ImportRowResource($row),
+        ]);
+    }
+
+    /**
+     * Crea un niño nuevo por cada fila 'no_match' del lote, de una sola vez.
+     *
+     * Pensado para cuando una hoja se sube sola (sin contraparte con la que
+     * comparar en todo el sistema): cada fila termina en 'no_match' aunque el
+     * dato esté perfecto, porque no hay nada contra qué emparejarla. Pedir
+     * confirmación fila por fila en ese caso es puro trabajo manual sin
+     * beneficio — acá se resuelven todas de un saque.
+     *
+     * A propósito NO toca 'partial_match': esas filas sí tienen una duda real
+     * (tilde, DNI que no cierra del todo, candidato ambiguo) y requieren que
+     * un humano decida — nunca se resuelven en lote.
+     */
+    public function bulkResolveNoMatch(Request $request, ImportBatch $batch): JsonResponse
+    {
+        abort_unless($request->user()->can('importaciones.gestionar'), 403, 'No tiene permiso para resolver importaciones.');
+
+        $userId = $request->user()->id;
+        $resolved = 0;
+        $skipped = [];
+
+        ImportRow::where('batch_id', $batch->id)
+            ->where('status', 'no_match')
+            ->orderBy('file_line_number')
+            ->chunkById(100, function ($rows) use ($batch, $userId, &$resolved, &$skipped) {
+                foreach ($rows as $row) {
+                    $raw = json_decode($row->raw_data, true) ?: [];
+
+                    if (empty($raw['birth_date'])) {
+                        $skipped[] = $row->file_line_number;
+                        continue;
+                    }
+
+                    $this->confirmRow($row, null, $userId, $batch);
+                    $resolved++;
+                }
+            });
+
+        return response()->json([
+            'message'  => "{$resolved} fila(s) resuelta(s) creando un niño nuevo por cada una."
+                . (count($skipped) > 0 ? ' ' . count($skipped) . ' fila(s) sin fecha de nacimiento quedaron pendientes (revisar manualmente).' : ''),
+            'resolved' => $resolved,
+            'skipped_lines' => $skipped,
+        ]);
+    }
+
+    /**
+     * Re-corre el matching de las filas sin resolver de un batch (partial_match/no_match)
+     * contra una hoja puntual elegida a mano por el operador, en vez de la búsqueda
+     * automática system-wide (cualquier batch de la fuente opuesta, alguna vez subido).
+     *
+     * Solo tiene sentido entre civil_registry↔education (la única fuente que hace
+     * emparejamiento cruzado por nombre+fecha — ver ImportMatchingService::match()),
+     * y solo contra una hoja del mismo archivo subido junto (mismo storage_path).
+     *
+     * Nunca auto-resuelve: aunque el resultado sea 100% de confianza, la fila queda
+     * en 'partial_match' para que el operador confirme con el botón habitual.
+     */
+    public function rematchBatch(Request $request, ImportBatch $batch, ImportMatchingService $matcher): JsonResponse
+    {
+        abort_unless($request->user()->can('importaciones.gestionar'), 403, 'No tiene permiso para resolver importaciones.');
+
+        $data = $request->validate([
+            'against_batch_id' => ['required', 'uuid', 'exists:import_batches,id'],
+        ]);
+
+        $against = ImportBatch::findOrFail($data['against_batch_id']);
+
+        if ($against->storage_path !== $batch->storage_path) {
+            return response()->json([
+                'message' => 'Solo se puede comparar contra otra hoja del mismo archivo subido.',
+            ], 422);
+        }
+
+        $expectedOpposite = match ($batch->source) {
+            'civil_registry' => 'education',
+            'education'      => 'civil_registry',
+            default          => null, // 'health' no hace emparejamiento cruzado por hoja
+        };
+
+        if ($expectedOpposite === null || $against->source !== $expectedOpposite) {
+            return response()->json([
+                'message' => 'Solo se puede comparar Registro Civil contra Educación (o viceversa). Salud no usa este tipo de comparación.',
+            ], 422);
+        }
+
+        $updated = 0;
+
+        ImportRow::where('batch_id', $batch->id)
+            ->whereIn('status', ['partial_match', 'no_match'])
+            ->orderBy('file_line_number')
+            ->chunkById(100, function ($rows) use ($matcher, $against, &$updated) {
+                foreach ($rows as $row) {
+                    $result = $matcher->rematchAgainst($row, $against->id);
+                    $matcher->applyMatch($row, $result);
+                    $updated++;
+                }
+            });
+
+        return response()->json([
+            'message' => "{$updated} fila(s) recomparada(s) contra \"" . ($against->sheet_name ?? $against->original_filename) . '".',
+            'updated' => $updated,
         ]);
     }
 
@@ -229,22 +396,35 @@ class ImportController extends Controller
         });
     }
 
-    private function confirmRow(ImportRow $row, ?string $childId, string $userId, ImportBatch $batch): void
+    /**
+     * $dataSource: cuando NO se provee $childId y hay una contraparte (matched_row),
+     * decide con cuál de las dos filas se identifica al niño NUEVO (nombre + fecha de
+     * nacimiento) — 'row' (default) usa esta fila, 'matched_row' usa la contraparte.
+     * No afecta los registros de dominio (BirthRecord/EducationRecord/HealthRecord):
+     * cada uno siempre refleja los datos de SU propia fila, sea cual sea la elegida
+     * como identidad del niño.
+     */
+    private function confirmRow(ImportRow $row, ?string $childId, string $userId, ImportBatch $batch, string $dataSource = 'row'): void
     {
-        DB::transaction(function () use ($row, $childId, $userId, $batch) {
+        DB::transaction(function () use ($row, $childId, $userId, $batch, $dataSource) {
             $raw = json_decode($row->raw_data, true) ?: [];
+
+            $matchedRow = $row->matched_row_id ? ImportRow::find($row->matched_row_id) : null;
+            $matchedRaw = $matchedRow ? (json_decode($matchedRow->raw_data, true) ?: []) : null;
+
+            $childSourceRaw = ($dataSource === 'matched_row' && $matchedRaw) ? $matchedRaw : $raw;
 
             // Obtener o crear el niño
             $child = $childId
                 ? Child::findOrFail($childId)
-                : $this->createChildFromRow($raw, $userId);
+                : $this->createChildFromRow($childSourceRaw, $userId);
 
             // Crear el registro de dominio correspondiente a la fuente del batch
-            if ($batch->source === 'civil_registry') {
-                $this->createBirthRecordIfAbsent($child, $raw, $batch->institution_id);
-            } else {
-                $this->createEducationRecordIfAbsent($child, $raw, $batch->institution_id);
-            }
+            match ($batch->source) {
+                'civil_registry' => $this->createBirthRecordIfAbsent($child, $raw, $batch->institution_id),
+                'health'         => $this->createHealthRecordIfAbsent($child, $raw, $batch->institution_id),
+                default          => $this->createEducationRecordIfAbsent($child, $raw, $batch->institution_id),
+            };
 
             // Actualizar esta fila
             $row->update([
@@ -255,25 +435,21 @@ class ImportController extends Controller
             ]);
 
             // Si hay una contraparte (partial_match), también vincularla
-            if ($row->matched_row_id) {
-                $matchedRow = ImportRow::find($row->matched_row_id);
-                if ($matchedRow && in_array($matchedRow->status, ['partial_match', 'no_match'])) {
-                    $matchedRaw  = json_decode($matchedRow->raw_data, true) ?: [];
-                    $matchedBatch = $matchedRow->batch;
+            if ($matchedRow && in_array($matchedRow->status, ['partial_match', 'no_match'])) {
+                $matchedBatch = $matchedRow->batch;
 
-                    if ($matchedBatch->source === 'civil_registry') {
-                        $this->createBirthRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id);
-                    } else {
-                        $this->createEducationRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id);
-                    }
+                match ($matchedBatch->source) {
+                    'civil_registry' => $this->createBirthRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id),
+                    'health'         => $this->createHealthRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id),
+                    default          => $this->createEducationRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id),
+                };
 
-                    $matchedRow->update([
-                        'status'      => 'manual_resolved',
-                        'child_id'    => $child->id,
-                        'resolved_by' => $userId,
-                        'resolved_at' => now(),
-                    ]);
-                }
+                $matchedRow->update([
+                    'status'      => 'manual_resolved',
+                    'child_id'    => $child->id,
+                    'resolved_by' => $userId,
+                    'resolved_at' => now(),
+                ]);
             }
         });
     }
@@ -330,6 +506,24 @@ class ImportController extends Controller
                 'grade_or_year'  => $raw['grade_or_year'] ?? null,
                 'is_enrolled'    => true,
                 'absences_count' => 0,
+            ]
+        );
+    }
+
+    private function createHealthRecordIfAbsent(Child $child, array $raw, ?string $institutionId): void
+    {
+        if (! isset($raw['health_center_name'])) {
+            return;
+        }
+
+        HealthRecord::firstOrCreate(
+            ['child_id' => $child->id, 'institution_id' => $institutionId],
+            [
+                'health_center_name'      => $raw['health_center_name'],
+                'healthy_checkup_current' => $raw['healthy_checkup_current'] ?? null,
+                'vaccines_current'        => $raw['vaccines_current'] ?? null,
+                'last_checkup_date'       => $raw['last_checkup_date'] ?? null,
+                'observations'            => $raw['observations'] ?? null,
             ]
         );
     }
