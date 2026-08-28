@@ -4,24 +4,18 @@ namespace App\Services\Import;
 
 /**
  * Resultado de ImportMatchingService::matchChild(): identifica (o sugiere) a
- * qué Child existente corresponde una fila de importación, combinando 3
- * señales independientes (DNI, nombre, apellido).
+ * qué Child existente corresponde una fila de importación, combinando 4
+ * señales independientes (DNI, nombre, apellido, fecha de nacimiento).
  *
- * Confianza 100 = las 3 señales coinciden con un único candidato → auto.
- * Cualquier otro caso (incluida la ambigüedad entre varios candidatos)
- * queda con confianza < 100 y solo una SUGERENCIA — nunca se vincula solo.
+ * Ninguna confianza — ni siquiera 100 — vincula sola: el sistema nunca crea
+ * ni vincula un niño sin que un operador lo confirme a mano. La confianza
+ * solo decide qué tan destacada se ve la sugerencia en pantalla.
  */
 readonly class ChildMatchResult
 {
     public function __construct(
         public readonly int $confidence,      // 0-100
-        public readonly ?string $childId,     // solo si confidence === 100
         public readonly ?string $suggestedChildId,
         public readonly string $notes,
     ) {}
-
-    public function isAutomatic(): bool
-    {
-        return $this->confidence === 100 && $this->childId !== null;
-    }
 }

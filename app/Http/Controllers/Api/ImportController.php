@@ -15,6 +15,7 @@ use App\Models\EducationRecord;
 use App\Models\HealthRecord;
 use App\Models\ImportBatch;
 use App\Models\ImportRow;
+use App\Models\Institution;
 use App\Services\Import\ImportMatchingService;
 use App\Services\Import\ImportParserService;
 use App\Services\Import\ImportTemplateService;
@@ -39,12 +40,25 @@ class ImportController extends Controller
 {
     /**
      * Listado paginado de lotes de importación, más recientes primero.
+     *
+     * Un batch 'completed' sin nada pendiente de revisar (todas sus filas ya
+     * quedaron matched/manual_resolved/skipped/error) deja de listarse acá —
+     * pedido explícito del cliente para no acumular filas viejas en la
+     * pantalla. El registro NO se borra de la base (sigue existiendo para
+     * trazabilidad — ver ImportRow — y sigue siendo accesible entrando
+     * directo a /imports/{id}/review por URL), solo se oculta del listado.
+     * 'pending'/'processing'/'failed' siempre se listan, tengan o no filas
+     * por revisar, porque necesitan atención o todavía están en curso.
      */
     public function index(Request $request): AnonymousResourceCollection
     {
         $this->authorizeRead($request);
 
         $batches = ImportBatch::with(['institution', 'uploader'])
+            ->where(function ($query) {
+                $query->whereIn('status', ['pending', 'processing', 'failed'])
+                    ->orWhereHas('rows', fn ($q) => $q->whereIn('status', ['partial_match', 'no_match']));
+            })
             ->latest()
             ->paginate(15);
 
@@ -232,6 +246,12 @@ class ImportController extends Controller
         $action = $request->input('action');
         $childId = $request->input('child_id');
         $dataSource = $request->input('data_source', 'row');
+        // Correcciones tipeadas a mano por el operador antes de confirmar — solo
+        // pisan los datos de ESTA fila, nunca los de la contraparte (matched_row).
+        $overrides = array_filter(
+            $request->input('overrides', []),
+            fn ($value) => $value !== null,
+        );
 
         // children.birth_date es NOT NULL: si la fila (o la contraparte elegida como
         // fuente de datos) no la trae, y no se está vinculando a un niño ya existente,
@@ -242,9 +262,12 @@ class ImportController extends Controller
                 ? ImportRow::find($row->matched_row_id)
                 : $row;
             $raw = $sourceRow ? (json_decode($sourceRow->raw_data, true) ?: []) : [];
+            if ($dataSource !== 'matched_row') {
+                $raw = array_merge($raw, $overrides);
+            }
             if (empty($raw['birth_date'])) {
                 return response()->json([
-                    'message' => 'La fila de origen elegida no trae fecha de nacimiento, así que no se puede crear un niño nuevo. Vinculala a un niño existente, elegí la otra fuente de datos, o completá la fecha en el archivo original.',
+                    'message' => 'La fila de origen elegida no trae fecha de nacimiento, así que no se puede crear un niño nuevo. Vinculala a un niño existente, elegí la otra fuente de datos, completá la fecha editando la fila, o corregila en el archivo original.',
                 ], 422);
             }
         }
@@ -252,7 +275,7 @@ class ImportController extends Controller
         if ($action === 'skip') {
             $this->skipRow($row, $request->user()->id);
         } else {
-            $this->confirmRow($row, $childId, $request->user()->id, $batch, $dataSource);
+            $this->confirmRow($row, $childId, $request->user()->id, $batch, $dataSource, $overrides);
         }
 
         $row->refresh()->load(['matchedRow', 'child', 'suggestedChild', 'batch']);
@@ -370,6 +393,85 @@ class ImportController extends Controller
         ]);
     }
 
+    /**
+     * Reabre una fila ya resuelta ('matched' — dato de antes de que el sistema
+     * pidiera aprobación siempre — o 'manual_resolved') para corregirla: vuelve
+     * a quedar en 'partial_match'/'no_match', recalculando el matching desde
+     * cero, así el operador confirma de nuevo con los botones habituales de la card.
+     *
+     * OJO: no borra el registro de dominio (BirthRecord/EducationRecord/HealthRecord)
+     * que ya se había creado para el niño anterior — si el niño correcto termina
+     * siendo otro, ese registro queda igual y hay que corregirlo a mano desde su
+     * ficha. Se dice explícitamente en match_notes para que no se pierda de vista.
+     */
+    public function reopenRow(Request $request, ImportBatch $batch, ImportRow $row, ImportMatchingService $matcher): JsonResponse
+    {
+        abort_unless($request->user()->can('importaciones.gestionar'), 403, 'No tiene permiso para resolver importaciones.');
+
+        if ($row->batch_id !== $batch->id) {
+            abort(404);
+        }
+
+        if (! in_array($row->status, ['matched', 'manual_resolved'], true)) {
+            return response()->json([
+                'message' => 'Esta fila no está resuelta, no hace falta reabrirla.',
+            ], 422);
+        }
+
+        DB::transaction(function () use ($row, $batch, $matcher, $request) {
+            $previousChild = $row->child_id ? Child::find($row->child_id) : null;
+
+            $reopenNote = $previousChild
+                ? "Reabierta por {$request->user()->email} el " . now()->format('d/m/Y H:i')
+                    . " — estaba vinculada a {$previousChild->first_name} {$previousChild->last_name}."
+                    . ' El registro que ya se había creado para ese niño no se borró automáticamente:'
+                    . ' si el niño correcto es otro, corregilo a mano desde su ficha.'
+                : 'Reabierta por ' . $request->user()->email . ' el ' . now()->format('d/m/Y H:i') . '.';
+
+            // OJO: matched_row_id NO se toca acá — se deja intacto para que, si la
+            // rama de match() cruzado (más abajo) vuelve a encontrar contraparte,
+            // applyMatch() pueda comparar contra el valor anterior y liberar la
+            // vieja contraparte sola si ya no corresponde (su lógica ya existente
+            // de "previousMatchedRowId"). Solo la rama de matchChild() lo limpia a
+            // mano, porque esa rama nunca pasa por applyMatch().
+            $row->update([
+                'status'             => 'no_match',
+                'child_id'           => null,
+                'suggested_child_id' => null,
+                'match_confidence'   => null,
+                'resolved_by'        => null,
+                'resolved_at'        => null,
+                'match_notes'        => $reopenNote,
+            ]);
+
+            if (in_array($batch->source, ['civil_registry', 'education', 'health'], true)) {
+                $childResult = $matcher->matchChild($row);
+
+                if ($childResult->confidence > 0) {
+                    $row->update([
+                        'status'             => 'partial_match',
+                        'match_confidence'   => $childResult->confidence,
+                        'suggested_child_id' => $childResult->suggestedChildId,
+                        'matched_row_id'     => null,
+                        'match_notes'        => $reopenNote . ' | ' . $childResult->notes,
+                    ]);
+                    return;
+                }
+            }
+
+            $result = $matcher->match($row);
+            $matcher->applyMatch($row, $result);
+            $row->update(['match_notes' => $reopenNote . ' | ' . $result->notes]);
+        });
+
+        $row->refresh()->load(['matchedRow', 'child', 'suggestedChild', 'batch']);
+
+        return response()->json([
+            'message' => 'Fila reabierta — quedó en revisión para que la vuelvas a confirmar.',
+            'row'     => new ImportRowResource($row),
+        ]);
+    }
+
     // ─── Lógica de resolución ─────────────────────────────────────────────────────
 
     private function skipRow(ImportRow $row, string $userId): void
@@ -403,11 +505,15 @@ class ImportController extends Controller
      * No afecta los registros de dominio (BirthRecord/EducationRecord/HealthRecord):
      * cada uno siempre refleja los datos de SU propia fila, sea cual sea la elegida
      * como identidad del niño.
+     *
+     * $overrides: correcciones que el operador tipeó a mano antes de confirmar (ver
+     * ResolveImportRowRequest) — pisan los datos de ESTA fila ($raw), nunca los de
+     * la contraparte, así que solo tienen efecto real cuando $dataSource !== 'matched_row'.
      */
-    private function confirmRow(ImportRow $row, ?string $childId, string $userId, ImportBatch $batch, string $dataSource = 'row'): void
+    private function confirmRow(ImportRow $row, ?string $childId, string $userId, ImportBatch $batch, string $dataSource = 'row', array $overrides = []): void
     {
-        DB::transaction(function () use ($row, $childId, $userId, $batch, $dataSource) {
-            $raw = json_decode($row->raw_data, true) ?: [];
+        DB::transaction(function () use ($row, $childId, $userId, $batch, $dataSource, $overrides) {
+            $raw = array_merge(json_decode($row->raw_data, true) ?: [], $overrides);
 
             $matchedRow = $row->matched_row_id ? ImportRow::find($row->matched_row_id) : null;
             $matchedRaw = $matchedRow ? (json_decode($matchedRow->raw_data, true) ?: []) : null;
@@ -458,10 +564,14 @@ class ImportController extends Controller
 
     private function createChildFromRow(array $raw, string $createdBy): Child
     {
+        $dni = $raw['dni'] ?? null;
+
         return Child::create([
             'first_name' => $raw['first_name'] ?? 'Sin nombre',
             'last_name'  => $raw['last_name'] ?? 'Sin apellido',
             'birth_date' => $raw['birth_date'] ?? null,
+            'dni'        => $dni,
+            'dni_hash'   => $dni ? ImportMatchingService::hashDni($dni) : null,
             'created_by' => $createdBy,
         ]);
     }
@@ -492,17 +602,21 @@ class ImportController extends Controller
         ]);
     }
 
+    /**
+     * La institución ya se eligió al subir el archivo (es obligatoria para 'education'
+     * en StoreImportRequest) — la fila NO necesita repetir el nombre de la escuela en
+     * una columna para que el vínculo se cree. Si el archivo no trae 'school_name' (o
+     * la hoja simplemente no tiene esa columna), se usa el nombre de la institución
+     * como valor por defecto — mismo criterio que ya usa ChildController::store()
+     * al auto-vincular un niño creado por una institución.
+     */
     private function createEducationRecordIfAbsent(Child $child, array $raw, ?string $institutionId): void
     {
-        if (! isset($raw['school_name'])) {
-            return;
-        }
-
         EducationRecord::firstOrCreate(
             ['child_id' => $child->id],
             [
                 'institution_id' => $institutionId,
-                'school_name'    => $raw['school_name'],
+                'school_name'    => $raw['school_name'] ?? Institution::find($institutionId)?->name ?? '',
                 'grade_or_year'  => $raw['grade_or_year'] ?? null,
                 'is_enrolled'    => true,
                 'absences_count' => 0,
@@ -510,16 +624,13 @@ class ImportController extends Controller
         );
     }
 
+    /** Mismo criterio que createEducationRecordIfAbsent() — ver ese docblock. */
     private function createHealthRecordIfAbsent(Child $child, array $raw, ?string $institutionId): void
     {
-        if (! isset($raw['health_center_name'])) {
-            return;
-        }
-
         HealthRecord::firstOrCreate(
             ['child_id' => $child->id, 'institution_id' => $institutionId],
             [
-                'health_center_name'      => $raw['health_center_name'],
+                'health_center_name'      => $raw['health_center_name'] ?? Institution::find($institutionId)?->name ?? '',
                 'healthy_checkup_current' => $raw['healthy_checkup_current'] ?? null,
                 'vaccines_current'        => $raw['vaccines_current'] ?? null,
                 'last_checkup_date'       => $raw['last_checkup_date'] ?? null,

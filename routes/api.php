@@ -167,6 +167,7 @@ Route::prefix('v1')->group(function () {
         // - GET    /api/v1/imports/{batch}/siblings                 → otras hojas del mismo archivo subido
         // - GET    /api/v1/imports/{batch}/rows                    → filas (?status=partial_match|no_match|...)
         // - PATCH  /api/v1/imports/{batch}/rows/{row}/resolve      → resolver fila [solo admin]
+        // - POST   /api/v1/imports/{batch}/rows/{row}/reopen        → reabrir fila ya resuelta para corregirla [solo admin]
         // - POST   /api/v1/imports/{batch}/rows/bulk-resolve        → crear niño nuevo por cada fila 'no_match' [solo admin]
         // - POST   /api/v1/imports/{batch}/rematch                  → recomparar contra una hoja elegida a mano [solo admin]
         // -----------------------------------------------------------------------
@@ -179,6 +180,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/{batch}/siblings',                [ImportController::class, 'siblings']);
             Route::get('/{batch}/rows',                    [ImportController::class, 'rows']);
             Route::patch('/{batch}/rows/{row}/resolve',    [ImportController::class, 'resolveRow']);
+            Route::post('/{batch}/rows/{row}/reopen',      [ImportController::class, 'reopenRow']);
             Route::post('/{batch}/rows/bulk-resolve',      [ImportController::class, 'bulkResolveNoMatch']);
             Route::post('/{batch}/rematch',                [ImportController::class, 'rematchBatch']);
         });

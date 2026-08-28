@@ -8,6 +8,7 @@ use App\Http\Requests\UpdateChildRequest;
 use App\Http\Resources\ChildResource;
 use App\Models\Child;
 use App\Services\ChildAlertEvaluator;
+use App\Services\Import\ImportMatchingService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -95,7 +96,12 @@ class ChildController extends Controller
         }
 
         if ($search = trim((string) $request->query('search', ''))) {
-            $dniHash = hash('sha256', $search);
+            // Normalizar antes de hashear (quita puntos/espacios/guiones): el DNI
+            // argentino se tipea con formatos distintos ("25.542.653", "25542653")
+            // y dni_hash siempre se calculó sobre el valor normalizado — hashear el
+            // texto de búsqueda tal cual nunca hubiera encontrado nada por DNI si
+            // el usuario escribe los puntos.
+            $dniHash = ImportMatchingService::hashDni($search);
             $query->where(function ($q) use ($search, $dniHash) {
                 $q->where('first_name', 'ilike', "%{$search}%")
                     ->orWhere('last_name', 'ilike', "%{$search}%")
@@ -223,9 +229,12 @@ class ChildController extends Controller
     {
         $data = $request->validated();
 
-        // Verificar duplicado por DNI antes de crear
+        // Verificar duplicado por DNI antes de crear. Normalizar antes de hashear
+        // (mismo criterio que ImportMatchingService::hashDni()/User::dniHash()):
+        // sin esto, "25.542.653" y "25542653" generan hashes distintos y el
+        // sistema no detecta que es el mismo DNI.
         if (! empty($data['dni'])) {
-            $dniHash     = hash('sha256', $data['dni']);
+            $dniHash     = ImportMatchingService::hashDni($data['dni']);
             $existingChild = Child::where('dni_hash', $dniHash)->first();
 
             if ($existingChild) {
@@ -292,10 +301,11 @@ class ChildController extends Controller
 
         $data = $request->validated();
 
-        // Si se cambia el DNI, actualizamos también el hash
+        // Si se cambia el DNI, actualizamos también el hash (normalizado, mismo
+        // criterio que store() — ver comentario ahí).
         if (array_key_exists('dni', $data)) {
             $data['dni_hash'] = ! empty($data['dni'])
-                ? hash('sha256', $data['dni'])
+                ? ImportMatchingService::hashDni($data['dni'])
                 : null;
         }
 

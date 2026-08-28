@@ -2,10 +2,6 @@
 
 namespace App\Jobs;
 
-use App\Models\BirthRecord;
-use App\Models\Child;
-use App\Models\EducationRecord;
-use App\Models\HealthRecord;
 use App\Models\ImportBatch;
 use App\Models\ImportRow;
 use App\Services\Import\ImportMatchingService;
@@ -23,23 +19,30 @@ use Illuminate\Support\Facades\Storage;
 /**
  * Job asíncrono que procesa un lote de importación.
  *
+ * Este job SOLO calcula sugerencias de matching — nunca crea ni vincula un
+ * Child ni un registro de dominio (BirthRecord/EducationRecord/HealthRecord)
+ * por su cuenta. Cada niño que se da de alta tiene que ser aprobado a mano
+ * por el operador desde la pantalla de revisión (ver
+ * ImportController::confirmRow()), sin excepción, aunque la coincidencia sea
+ * perfecta (100% de confianza).
+ *
  * Flujo (ver processRow()):
  *   1. Parsea el archivo línea por línea (streaming, no carga todo en memoria)
  *   2. Por cada fila crea un ImportRow con raw_data cifrado y campos normalizados
  *   3. Las 3 fuentes primero intentan matchChild() (DNI+nombre+apellido) contra niños ya
- *      existentes; si las 3 señales no coinciden con un único candidato, la fila queda en
- *      'partial_match' con una sugerencia — nunca se vincula "a medias".
+ *      existentes; cualquier señal en común deja la fila en 'partial_match' con una
+ *      sugerencia — nunca se vincula sola.
  *   4. Si matchChild() no encontró candidato:
  *      - 'civil_registry'/'education' siguen el matching cruzado de siempre entre sí, por
- *        nombre+fecha de nacimiento (confianza 100 → crea/vincula; <100 → 'partial_match';
- *        sin match → 'no_match', disponible para retroactive matching)
+ *        nombre+fecha de nacimiento ('partial_match' si hay sugerencia, 'no_match' si no —
+ *        disponible para retroactive matching)
  *      - 'health' no tiene una fuente opuesta con la que emparejarse: si matchChild() no
- *        encontró candidato, queda directo en 'no_match' — NO crea un niño nuevo solo, para
- *        no duplicar cuando esa hoja se procesa antes que las otras (ver ImportMatchingService::match())
+ *        encontró candidato, queda directo en 'no_match' (ver ImportMatchingService::match())
  *   5. Actualiza contadores del batch
  *
  * Retroactive matching: cuando educación llega DESPUÉS de registro civil ya importado,
- * las filas de civil en 'no_match' son actualizadas automáticamente por applyMatch().
+ * las filas de civil en 'no_match' son actualizadas automáticamente por applyMatch()
+ * (siguen quedando en 'partial_match', a la espera de que el operador confirme).
  *
  * Timeout: 30 minutos (archivos grandes de miles de filas).
  * Reintentos: 1 (si falla el job completo se marca el batch como 'failed').
@@ -194,12 +197,16 @@ class ProcessImportBatch implements ShouldQueue
     // ─── Resolución de la fila ──────────────────────────────────────────────────────
 
     /**
+     * Calcula la sugerencia de matching de una fila y la deja en 'partial_match' o
+     * 'no_match' — NUNCA crea ni vincula un registro de dominio acá. El operador que
+     * subió el archivo tiene que aprobar cada niño que se da de alta, siempre, con
+     * un click explícito en la pantalla de revisión (ver ImportController::confirmRow());
+     * ninguna confianza de matching, ni siquiera 100%, salta ese paso.
+     *
      * Todas las fuentes pueden traer DNI propio del niño (algunas hojas de registro
-     * civil también lo incluyen, no solo el de madre/padre): antes de cualquier otra
-     * cosa, se intenta identificar a qué Child ya existente corresponde la fila
-     * combinando DNI + nombre + apellido (matchChild). Si las 3 señales no coinciden
-     * con un único candidato, la fila queda para revisión manual — nunca se vincula
-     * "a medias".
+     * civil también lo incluyen, no solo el de madre/padre): antes que nada se intenta
+     * identificar a qué Child ya existente corresponde la fila combinando DNI + nombre
+     * + apellido (matchChild).
      *
      * Si matchChild no encuentra ningún candidato (niño realmente nuevo, o la fila no
      * trae DNI/nombre reconocible), sigue el flujo existente: para 'civil_registry',
@@ -210,20 +217,7 @@ class ProcessImportBatch implements ShouldQueue
         if (in_array($batch->source, ['civil_registry', 'education', 'health'], true)) {
             $childResult = $matcher->matchChild($importRow);
 
-            if ($childResult->isAutomatic()) {
-                $importRow->update([
-                    'status'             => 'matched',
-                    'match_confidence'   => 100,
-                    'match_notes'        => $childResult->notes,
-                    'suggested_child_id' => $childResult->childId,
-                ]);
-                $this->createRecords($batch, $importRow, $rowData, $childResult->childId);
-                return;
-            }
-
             if ($childResult->confidence > 0) {
-                // DNI, nombre o apellido no coinciden los 3 a la vez con el mismo niño:
-                // no se resuelve solo, un operador debe decidir a quién corresponde.
                 $importRow->update([
                     'status'             => 'partial_match',
                     'match_confidence'   => $childResult->confidence,
@@ -234,139 +228,11 @@ class ProcessImportBatch implements ShouldQueue
             }
 
             // confidence === 0: ningún niño existente coincide → sigue el flujo normal
-            // de abajo (crea uno nuevo; 'education' además intenta emparejar con civil_registry).
+            // de abajo ('education' además intenta emparejar con civil_registry).
         }
 
         $result = $matcher->match($importRow);
         $matcher->applyMatch($importRow, $result);
-
-        if ($result->isAutomatic()) {
-            $this->createRecords($batch, $importRow, $rowData);
-        }
-    }
-
-    // ─── Creación de registros de dominio (solo match automático) ─────────────────
-
-    /**
-     * Cuando el match es automático (confianza 100), crea o vincula los registros
-     * de dominio correspondientes al origen del archivo.
-     *
-     * $knownChildId: cuando matchChild() ya identificó con certeza el Child (las 3
-     * señales coinciden), se usa directo en vez de la búsqueda débil de
-     * findOrCreateChild() (solo dni_hash exacto o nombre+fecha exactos).
-     */
-    private function createRecords(ImportBatch $batch, ImportRow $importRow, array $rowData, ?string $knownChildId = null): void
-    {
-        DB::transaction(function () use ($batch, $importRow, $rowData, $knownChildId) {
-            $child = $knownChildId
-                ? Child::findOrFail($knownChildId)
-                : $this->findOrCreateChild($importRow, $rowData);
-
-            match ($batch->source) {
-                'civil_registry' => $this->createBirthRecord($child, $batch->institution_id, $rowData),
-                'health'         => $this->createHealthRecord($child, $batch->institution_id, $rowData),
-                default          => $this->createEducationRecord($child, $batch->institution_id, $rowData),
-            };
-
-            $importRow->update(['child_id' => $child->id]);
-
-            // Vincular también la contraparte si existe
-            if ($importRow->matched_row_id) {
-                ImportRow::where('id', $importRow->matched_row_id)
-                    ->update(['child_id' => $child->id]);
-            }
-        });
-    }
-
-    private function findOrCreateChild(ImportRow $importRow, array $rowData): Child
-    {
-        // Buscar por dni_hash primero (más fiable), luego por nombre+fecha
-        if ($importRow->dni_hash) {
-            $existing = Child::where('dni_hash', $importRow->dni_hash)->first();
-            if ($existing) {
-                return $existing;
-            }
-        }
-
-        return Child::firstOrCreate(
-            [
-                // Buscar por nombre normalizado + fecha (sin exponer datos en plain text)
-                'first_name' => $rowData['first_name'],
-                'last_name'  => $rowData['last_name'],
-                'birth_date' => $rowData['birth_date'] ?? null,
-            ],
-            ['created_by' => null] // creado por el sistema (importación automática)
-        );
-    }
-
-    private function createBirthRecord(Child $child, ?string $institutionId, array $rowData): void
-    {
-        if ($child->birthRecord()->exists()) {
-            return; // ya tiene registro de nacimiento, no duplicar
-        }
-
-        $motherDni = $rowData['mother_dni'] ?? null;
-        $fatherDni = $rowData['father_dni'] ?? null;
-
-        BirthRecord::create([
-            'child_id'            => $child->id,
-            'institution_id'      => $institutionId,
-            'first_name'          => $rowData['first_name'],
-            'last_name'           => $rowData['last_name'],
-            'birth_date'          => $rowData['birth_date'] ?? null,
-            'mother_name'         => $rowData['mother_name'] ?? null,
-            'mother_dni'          => $motherDni,
-            'mother_dni_hash'     => $motherDni ? ImportMatchingService::hashDni($motherDni) : null,
-            'father_name'         => $rowData['father_name'] ?? null,
-            'father_dni'          => $fatherDni,
-            'father_dni_hash'     => $fatherDni ? ImportMatchingService::hashDni($fatherDni) : null,
-            'address'             => $rowData['address'] ?? null,
-            'birth_establishment' => $rowData['birth_establishment'] ?? null,
-        ]);
-    }
-
-    private function createEducationRecord(Child $child, ?string $institutionId, array $rowData): void
-    {
-        if (! isset($rowData['school_name'])) {
-            return;
-        }
-
-        EducationRecord::firstOrCreate(
-            ['child_id' => $child->id],
-            [
-                'institution_id'  => $institutionId,
-                'school_name'     => $rowData['school_name'] ?? '',
-                'grade_or_year'   => $rowData['grade_or_year'] ?? null,
-                'is_enrolled'     => true,
-                'absences_count'  => 0,
-            ]
-        );
-    }
-
-    /**
-     * A diferencia de educación, un niño SÍ puede tener un health_record por cada
-     * institución de salud (health_records tiene unique(child_id, institution_id)),
-     * así que la clave de firstOrCreate es compuesta.
-     *
-     * healthy_checkup_current/vaccines_current quedan null ("sin dato") cuando el
-     * archivo no los trae — ver migración make_health_records_checkup_fields_nullable.
-     */
-    private function createHealthRecord(Child $child, ?string $institutionId, array $rowData): void
-    {
-        if (! isset($rowData['health_center_name'])) {
-            return;
-        }
-
-        HealthRecord::firstOrCreate(
-            ['child_id' => $child->id, 'institution_id' => $institutionId],
-            [
-                'health_center_name'      => $rowData['health_center_name'] ?? '',
-                'healthy_checkup_current' => $rowData['healthy_checkup_current'] ?? null,
-                'vaccines_current'        => $rowData['vaccines_current'] ?? null,
-                'last_checkup_date'       => $rowData['last_checkup_date'] ?? null,
-                'observations'            => $rowData['observations'] ?? null,
-            ]
-        );
     }
 
     // ─── Error en fila individual ─────────────────────────────────────────────────
