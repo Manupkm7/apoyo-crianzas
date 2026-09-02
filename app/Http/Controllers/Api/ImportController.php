@@ -39,6 +39,17 @@ use Symfony\Component\HttpFoundation\StreamedResponse;
 class ImportController extends Controller
 {
     /**
+     * Fecha puesta cuando un niño/registro se crea sin fecha de nacimiento real
+     * (el archivo importado no la traía). children.birth_date y birth_records.birth_date
+     * son NOT NULL, así que hace falta *algún* valor — este es a propósito obviamente
+     * genérico (1/1/2000) en vez de, por ejemplo, la fecha de hoy, para que salte a la
+     * vista en cualquier reporte. children.birth_date_is_placeholder marca cuándo el
+     * niño en sí quedó con esta fecha (ver createChildFromRow()); el frontend debe
+     * mostrar una advertencia para que se corrija a mano.
+     */
+    private const GENERIC_BIRTH_DATE = '2000-01-01';
+
+    /**
      * Listado paginado de lotes de importación, más recientes primero.
      *
      * Un batch 'completed' sin nada pendiente de revisar (todas sus filas ya
@@ -49,16 +60,25 @@ class ImportController extends Controller
      * directo a /imports/{id}/review por URL), solo se oculta del listado.
      * 'pending'/'processing'/'failed' siempre se listan, tengan o no filas
      * por revisar, porque necesitan atención o todavía están en curso.
+     *
+     * ?search= filtra por nombre de archivo o de hoja (para encontrar un batch
+     * puntual entre varios sin tener que scrollear la paginación).
      */
     public function index(Request $request): AnonymousResourceCollection
     {
         $this->authorizeRead($request);
+
+        $search = trim((string) $request->query('search', ''));
 
         $batches = ImportBatch::with(['institution', 'uploader'])
             ->where(function ($query) {
                 $query->whereIn('status', ['pending', 'processing', 'failed'])
                     ->orWhereHas('rows', fn ($q) => $q->whereIn('status', ['partial_match', 'no_match']));
             })
+            ->when($search !== '', fn ($query) => $query->where(
+                fn ($q) => $q->where('original_filename', 'ilike', "%{$search}%")
+                    ->orWhere('sheet_name', 'ilike', "%{$search}%")
+            ))
             ->latest()
             ->paginate(15);
 
@@ -212,11 +232,38 @@ class ImportController extends Controller
             $query->whereIn('status', ['partial_match', 'no_match']);
         }
 
+        // Sub-filtro por % de confianza (solo tiene sentido junto a status=partial_match,
+        // ver confidenceSummary()) — filtra en el propio query para que la paginación
+        // se calcule sobre el subconjunto elegido y no sobre el batch entero.
+        $confidence = $request->query('confidence');
+        if ($confidence !== null && $confidence !== '') {
+            $query->where('match_confidence', (int) $confidence);
+        }
+
         $rows = $query
             ->orderByDesc('match_confidence') // las de mayor confianza primero (partial antes que no_match)
             ->paginate(20);
 
         return ImportRowResource::collection($rows);
+    }
+
+    /**
+     * Cuenta las filas 'partial_match' del batch entero agrupadas por % de confianza,
+     * para armar las sub-tabs de confianza sin traerse todas las filas del batch
+     * (rows() solo pagina 20 a la vez).
+     */
+    public function confidenceSummary(Request $request, ImportBatch $batch): JsonResponse
+    {
+        $this->authorizeRead($request);
+
+        $groups = $batch->rows()
+            ->where('status', 'partial_match')
+            ->selectRaw('match_confidence as confidence, count(*) as count')
+            ->groupBy('match_confidence')
+            ->orderByDesc('match_confidence')
+            ->get();
+
+        return response()->json(['data' => $groups]);
     }
 
     /**
@@ -253,24 +300,10 @@ class ImportController extends Controller
             fn ($value) => $value !== null,
         );
 
-        // children.birth_date es NOT NULL: si la fila (o la contraparte elegida como
-        // fuente de datos) no la trae, y no se está vinculando a un niño ya existente,
-        // no hay forma de crear el registro. Se valida acá para devolver un mensaje
-        // claro en vez de que explote el insert con un error de base de datos.
-        if ($action !== 'skip' && ! $childId) {
-            $sourceRow = ($dataSource === 'matched_row' && $row->matched_row_id)
-                ? ImportRow::find($row->matched_row_id)
-                : $row;
-            $raw = $sourceRow ? (json_decode($sourceRow->raw_data, true) ?: []) : [];
-            if ($dataSource !== 'matched_row') {
-                $raw = array_merge($raw, $overrides);
-            }
-            if (empty($raw['birth_date'])) {
-                return response()->json([
-                    'message' => 'La fila de origen elegida no trae fecha de nacimiento, así que no se puede crear un niño nuevo. Vinculala a un niño existente, elegí la otra fuente de datos, completá la fecha editando la fila, o corregila en el archivo original.',
-                ], 422);
-            }
-        }
+        // La fecha de nacimiento faltante ya NO bloquea la confirmación: si ni la fila
+        // ni su contraparte la traen, se usa GENERIC_BIRTH_DATE y se marca el niño con
+        // birth_date_is_placeholder (ver createChildFromRow()) para que el frontend
+        // muestre una advertencia — el operador la corrige después, editando el niño.
 
         if ($action === 'skip') {
             $this->skipRow($row, $request->user()->id);
@@ -307,30 +340,26 @@ class ImportController extends Controller
 
         $userId = $request->user()->id;
         $resolved = 0;
-        $skipped = [];
 
+        // Filas sin fecha de nacimiento ya no se saltan: confirmRow()/createChildFromRow()
+        // les pone GENERIC_BIRTH_DATE y marca birth_date_is_placeholder para que el
+        // frontend avise que hay que corregirla a mano.
         ImportRow::where('batch_id', $batch->id)
             ->where('status', 'no_match')
             ->orderBy('file_line_number')
-            ->chunkById(100, function ($rows) use ($batch, $userId, &$resolved, &$skipped) {
+            ->chunkById(100, function ($rows) use ($batch, $userId, &$resolved) {
                 foreach ($rows as $row) {
-                    $raw = json_decode($row->raw_data, true) ?: [];
-
-                    if (empty($raw['birth_date'])) {
-                        $skipped[] = $row->file_line_number;
-                        continue;
-                    }
-
                     $this->confirmRow($row, null, $userId, $batch);
                     $resolved++;
                 }
             });
 
         return response()->json([
-            'message'  => "{$resolved} fila(s) resuelta(s) creando un niño nuevo por cada una."
-                . (count($skipped) > 0 ? ' ' . count($skipped) . ' fila(s) sin fecha de nacimiento quedaron pendientes (revisar manualmente).' : ''),
+            'message'  => "{$resolved} fila(s) resuelta(s) creando un niño nuevo por cada una.",
             'resolved' => $resolved,
-            'skipped_lines' => $skipped,
+            // Se mantiene por compatibilidad con el frontend existente: ya no se salta
+            // ninguna fila por falta de fecha de nacimiento, así que siempre vacío.
+            'skipped_lines' => [],
         ]);
     }
 
@@ -565,14 +594,28 @@ class ImportController extends Controller
     private function createChildFromRow(array $raw, string $createdBy): Child
     {
         $dni = $raw['dni'] ?? null;
+        $dniHash = $dni ? ImportMatchingService::hashDni($dni) : null;
+
+        // Si ya existe un niño con este DNI (otra fila del mismo lote lo acaba de
+        // crear, o ya estaba en la base) se vincula a ese en vez de intentar crear
+        // uno nuevo — evita el UniqueConstraintViolationException de
+        // children_dni_hash_unique cuando bulkResolveNoMatch() procesa varias filas
+        // 'no_match' con el mismo DNI (p. ej. el mismo niño repetido en la hoja).
+        if ($dniHash) {
+            $existing = Child::where('dni_hash', $dniHash)->first();
+            if ($existing) {
+                return $existing;
+            }
+        }
 
         return Child::create([
-            'first_name' => $raw['first_name'] ?? 'Sin nombre',
-            'last_name'  => $raw['last_name'] ?? 'Sin apellido',
-            'birth_date' => $raw['birth_date'] ?? null,
-            'dni'        => $dni,
-            'dni_hash'   => $dni ? ImportMatchingService::hashDni($dni) : null,
-            'created_by' => $createdBy,
+            'first_name'                => $raw['first_name'] ?? 'Sin nombre',
+            'last_name'                 => $raw['last_name'] ?? 'Sin apellido',
+            'birth_date'                => $raw['birth_date'] ?? self::GENERIC_BIRTH_DATE,
+            'birth_date_is_placeholder' => empty($raw['birth_date']),
+            'dni'                       => $dni,
+            'dni_hash'                  => $dniHash,
+            'created_by'                => $createdBy,
         ]);
     }
 
@@ -590,7 +633,7 @@ class ImportController extends Controller
             'institution_id'      => $institutionId,
             'first_name'          => $raw['first_name'] ?? '',
             'last_name'           => $raw['last_name'] ?? '',
-            'birth_date'          => $raw['birth_date'] ?? null,
+            'birth_date'          => $raw['birth_date'] ?? self::GENERIC_BIRTH_DATE,
             'mother_name'         => $raw['mother_name'] ?? null,
             'mother_dni'          => $motherDni,
             'mother_dni_hash'     => $motherDni ? ImportMatchingService::hashDni($motherDni) : null,

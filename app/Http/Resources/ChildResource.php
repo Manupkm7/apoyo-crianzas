@@ -58,6 +58,10 @@ class ChildResource extends JsonResource
             'first_name' => $this->first_name,
             'last_name'  => $this->last_name,
             'birth_date' => $this->birth_date?->toDateString(),
+            // true cuando la fecha es un placeholder (1/1/2000) puesto por el sistema
+            // porque el archivo importado no la traía — ver ImportController::GENERIC_BIRTH_DATE.
+            // El frontend debe mostrar una advertencia para que se corrija a mano.
+            'birth_date_is_placeholder' => (bool) $this->birth_date_is_placeholder,
             'age'        => $this->age,
 
             // El DNI solo se muestra en el endpoint de detalle para admins y coordinadores

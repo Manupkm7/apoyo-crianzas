@@ -35,6 +35,7 @@ class Child extends Model
         'first_name',
         'last_name',
         'birth_date',
+        'birth_date_is_placeholder',
         'dni',
         'dni_hash',
         'name_normalized',
@@ -47,8 +48,9 @@ class Child extends Model
     protected function casts(): array
     {
         return [
-            'birth_date' => 'date',
-            'dni'        => 'encrypted', // AES-256 vía APP_KEY; se cifra al guardar, se descifra al leer
+            'birth_date'                => 'date',
+            'birth_date_is_placeholder' => 'boolean',
+            'dni'                       => 'encrypted', // AES-256 vía APP_KEY; se cifra al guardar, se descifra al leer
         ];
     }
 

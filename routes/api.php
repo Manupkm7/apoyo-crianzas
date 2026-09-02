@@ -165,7 +165,8 @@ Route::prefix('v1')->group(function () {
         // - GET    /api/v1/imports/template?source=&format=        → descargar plantilla (xlsx|csv|txt) [solo admin]
         // - GET    /api/v1/imports/{batch}                         → detalle de batch
         // - GET    /api/v1/imports/{batch}/siblings                 → otras hojas del mismo archivo subido
-        // - GET    /api/v1/imports/{batch}/rows                    → filas (?status=partial_match|no_match|...)
+        // - GET    /api/v1/imports/{batch}/rows                    → filas (?status=partial_match|no_match|...&confidence=)
+        // - GET    /api/v1/imports/{batch}/rows/confidence-summary → conteo por % de confianza (partial_match, batch entero)
         // - PATCH  /api/v1/imports/{batch}/rows/{row}/resolve      → resolver fila [solo admin]
         // - POST   /api/v1/imports/{batch}/rows/{row}/reopen        → reabrir fila ya resuelta para corregirla [solo admin]
         // - POST   /api/v1/imports/{batch}/rows/bulk-resolve        → crear niño nuevo por cada fila 'no_match' [solo admin]
@@ -179,6 +180,7 @@ Route::prefix('v1')->group(function () {
             Route::get('/{batch}',                         [ImportController::class, 'show']);
             Route::get('/{batch}/siblings',                [ImportController::class, 'siblings']);
             Route::get('/{batch}/rows',                    [ImportController::class, 'rows']);
+            Route::get('/{batch}/rows/confidence-summary', [ImportController::class, 'confidenceSummary']);
             Route::patch('/{batch}/rows/{row}/resolve',    [ImportController::class, 'resolveRow']);
             Route::post('/{batch}/rows/{row}/reopen',      [ImportController::class, 'reopenRow']);
             Route::post('/{batch}/rows/bulk-resolve',      [ImportController::class, 'bulkResolveNoMatch']);

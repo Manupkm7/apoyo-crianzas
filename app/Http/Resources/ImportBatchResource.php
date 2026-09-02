@@ -33,6 +33,10 @@ class ImportBatchResource extends JsonResource
             'status'            => $this->status,
             'original_filename' => $this->original_filename,
             'sheet_name'        => $this->sheet_name,
+            // Comparte el mismo valor entre todos los batches creados a partir del
+            // mismo archivo subido (una hoja cada uno) — el frontend lo usa para
+            // agruparlos visualmente. Ver ImportController::siblings()/rematchBatch().
+            'storage_path'      => $this->storage_path,
 
             'rows' => [
                 'total'          => $this->total_rows,

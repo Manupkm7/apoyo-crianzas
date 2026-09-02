@@ -36,6 +36,15 @@ echo "→ Reconstruyendo imagen del backend y levantando servicios..."
 cd "$BACKEND_DIR"
 docker compose -f compose.prod.yaml up -d --build
 
+# nginx resuelve el hostname 'app' una sola vez al arrancar (fastcgi_pass no
+# usa variables) y no vuelve a mirar el DNS de Docker después. Si 'app' se
+# recreó arriba, su IP en la red 'crianza' cambió, y nginx se queda pegado a
+# la IP vieja -> "connect() failed (111: Connection refused)" -> 502 en TODO
+# el sitio hasta reiniciar nginx a mano. Se lo reinicia siempre acá para que
+# nunca dependa de que alguien lo note.
+echo "→ Reiniciando nginx (evita que quede con la IP vieja de 'app')..."
+docker compose -f compose.prod.yaml restart nginx
+
 # Esperar a que la base de datos esté lista
 echo "→ Esperando a que PostgreSQL esté disponible..."
 sleep 5

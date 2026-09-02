@@ -105,6 +105,7 @@ class ImportRowResource extends JsonResource
                     'first_name' => $this->suggestedChild->first_name,
                     'last_name'  => $this->suggestedChild->last_name,
                     'birth_date' => $this->suggestedChild->birth_date?->toDateString(),
+                    'birth_date_is_placeholder' => (bool) $this->suggestedChild->birth_date_is_placeholder,
                     'dni'        => $this->suggestedChild->dni,
                 ] : null
             ),
