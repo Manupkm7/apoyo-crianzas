@@ -70,9 +70,18 @@ services:
   # Reutiliza la MISMA imagen que 'app' (crianza-app), el mismo .env y el mismo
   # volumen de storage privado (donde 'app' deja el archivo subido que el job
   # tiene que leer). Solo cambia el comando: queue:work en vez de php-fpm.
-  # Corre como root, igual que 'app' (su php-fpm master y los `exec app artisan`
-  # del deploy): así comparte dueño con storage/logs/laravel.log y evita el
-  # "Permission denied" al escribir el log.
+  #
+  # user: www-data — SIN esto, el contenedor corre como root (no hay USER en
+  # deploy/Dockerfile, así que el default es root salvo que algo baje privilegios).
+  # 'app' en cambio SÍ baja a www-data para atender requests: php-fpm arranca
+  # su proceso maestro como root pero los workers que procesan cada request
+  # corren como www-data (default del pool de la imagen php-fpm-alpine). Si
+  # queue-worker crea/toca storage/logs/laravel.log como root, el archivo queda
+  # con dueño root y php-fpm (www-data) no puede volver a escribirle una sola
+  # línea — cualquier excepción de una request HTTP se pierde en silencio,
+  # aunque la response siga devolviendo el 500 genérico de Laravel. Ya pasó en
+  # producción (2026-09-02) y dejó ~20 min de errores sin loguear hasta hacer
+  # `chown www-data:www-data storage/logs/laravel.log` a mano.
   #
   #   --timeout=1810  : los jobs de import declaran timeout=1800 (30 min); el
   #                     worker debe tolerar al menos eso.
@@ -90,6 +99,7 @@ services:
       context: .
       dockerfile: deploy/Dockerfile
     image: crianza-app
+    user: www-data
     command: php artisan queue:work --tries=1 --timeout=1810 --sleep=3 --max-time=3600
     volumes:
       - ./.env:/var/www/html/.env:ro
