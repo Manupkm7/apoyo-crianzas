@@ -8,7 +8,9 @@ use App\Models\Child;
 use App\Models\Department;
 use App\Models\DeathRecord;
 use App\Models\EducationObservation;
+use App\Models\EducationPeriodReport;
 use App\Models\EducationRecord;
+use App\Models\HealthPeriodReport;
 use App\Models\HealthRecord;
 use App\Models\ImportBatch;
 use App\Models\ImportRow;
@@ -56,7 +58,19 @@ class DatabaseExportController extends Controller
             'province_id'   => ['nullable', 'uuid', 'exists:provinces,id'],
             'department_id' => ['nullable', 'uuid', 'exists:departments,id'],
             'locality_id'   => ['nullable', 'uuid', 'exists:localities,id'],
+            'date_from'       => ['nullable', 'date', 'required_with:date_to'],
+            'date_to'         => ['nullable', 'date', 'after_or_equal:date_from', 'required_with:date_from'],
+            'period_year'     => ['nullable', 'integer', 'between:2000,2100', 'required_with:period_bimester'],
+            'period_bimester' => ['nullable', 'integer', 'between:1,5', 'required_with:period_year'],
+        ], [
+            'date_to.after_or_equal' => 'La fecha hasta no puede ser anterior a la fecha desde.',
         ]);
+
+        abort_if(
+            $request->filled('date_from') && $request->filled('period_year'),
+            422,
+            'Elegí un solo filtro por tiempo: rango de fechas o bimestre, no ambos.'
+        );
 
         $dir = storage_path('app/private/exports');
         File::ensureDirectoryExists($dir);
@@ -70,13 +84,29 @@ class DatabaseExportController extends Controller
         $institutionIds = $this->resolveJurisdictionInstitutionIds($request);
         $childIds = $this->resolveChildIdsForInstitutions($institutionIds);
 
-        (new Xlsx($this->buildSpreadsheet($institutionIds, $childIds)))->save($xlsxPath);
+        $dateRange = $this->resolveDateRange($request);
+        $periodFilter = $this->resolvePeriodFilter($request);
+
+        // El filtro por bimestre acota a los niños con algún reporte bimestral
+        // en ese período (y de ahí, a sus instituciones), combinándose por
+        // intersección con la jurisdicción si también se eligió una.
+        if ($periodFilter !== null) {
+            $periodChildIds = $this->resolveChildIdsForPeriod($periodFilter['year'], $periodFilter['bimester']);
+            $childIds = $childIds === null ? $periodChildIds : array_values(array_intersect($childIds, $periodChildIds));
+
+            $childInstitutionIds = $this->resolveInstitutionIdsForChildren($childIds);
+            $institutionIds = $institutionIds === null
+                ? $childInstitutionIds
+                : array_values(array_intersect($institutionIds, $childInstitutionIds));
+        }
+
+        (new Xlsx($this->buildSpreadsheet($institutionIds, $childIds, $dateRange, $periodFilter)))->save($xlsxPath);
 
         $zip = new ZipArchive();
         $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
         $zip->addFile($xlsxPath, 'datos.xlsx');
-        $this->addAttachments($zip, $institutionIds);
-        $zip->addFromString('LEEME.txt', $this->manifest($request, $institutionIds));
+        $this->addAttachments($zip, $institutionIds, $childIds);
+        $zip->addFromString('LEEME.txt', $this->manifest($request, $institutionIds, $dateRange, $periodFilter));
         $zip->close();
 
         @unlink($xlsxPath);
@@ -140,22 +170,112 @@ class DatabaseExportController extends Controller
     }
 
     /**
+     * Rango [desde 00:00, hasta 23:59:59] a partir de date_from/date_to, o null
+     * si no se pidió este método de filtro (mutuamente excluyente con el de bimestre).
+     */
+    private function resolveDateRange(Request $request): ?array
+    {
+        if (! $request->filled('date_from')) {
+            return null;
+        }
+
+        return [
+            'from' => Carbon::parse($request->query('date_from'))->startOfDay(),
+            'to'   => Carbon::parse($request->query('date_to'))->endOfDay(),
+        ];
+    }
+
+    /**
+     * Año + bimestre elegidos, o null si no se pidió este método de filtro
+     * (mutuamente excluyente con el de rango de fechas).
+     */
+    private function resolvePeriodFilter(Request $request): ?array
+    {
+        if (! $request->filled('period_year')) {
+            return null;
+        }
+
+        return [
+            'year'     => (int) $request->query('period_year'),
+            'bimester' => (int) $request->query('period_bimester'),
+        ];
+    }
+
+    /**
+     * Niños con algún reporte bimestral (educativo o de salud) en el año+bimestre
+     * elegido — son los únicos con datos asociados a ese período en particular.
+     */
+    private function resolveChildIdsForPeriod(int $year, int $bimester): array
+    {
+        $educationChildIds = EducationRecord::query()
+            ->whereHas('periodReports', fn ($q) => $q->where('year', $year)->where('bimester', $bimester))
+            ->pluck('child_id');
+
+        $healthChildIds = HealthRecord::query()
+            ->whereHas('periodReports', fn ($q) => $q->where('year', $year)->where('bimester', $bimester))
+            ->pluck('child_id');
+
+        return $educationChildIds->merge($healthChildIds)->unique()->values()->all();
+    }
+
+    /**
+     * Instituciones con algún registro (educativo, de salud, nacimiento o
+     * defunción) de alguno de los niños dados. Inverso de resolveChildIdsForInstitutions,
+     * usado para acotar Instituciones/Usuarios cuando el filtro activo es por bimestre.
+     */
+    private function resolveInstitutionIdsForChildren(array $childIds): array
+    {
+        if ($childIds === []) {
+            return [];
+        }
+
+        $institutionIds = collect();
+        foreach ([EducationRecord::class, HealthRecord::class, BirthRecord::class, DeathRecord::class] as $model) {
+            $institutionIds = $institutionIds->merge(
+                $model::query()->whereIn('child_id', $childIds)->pluck('institution_id')
+            );
+        }
+
+        return $institutionIds->filter()->unique()->values()->all();
+    }
+
+    /**
+     * Acota una query a las filas creadas y/o actualizadas dentro del rango elegido
+     * (OR entre created_at y updated_at). No-op si no se pidió este filtro.
+     */
+    private function scopeDateRange($query, ?array $dateRange)
+    {
+        if ($dateRange === null) {
+            return $query;
+        }
+
+        return $query->where(function ($q) use ($dateRange) {
+            $q->whereBetween('created_at', [$dateRange['from'], $dateRange['to']])
+                ->orWhereBetween('updated_at', [$dateRange['from'], $dateRange['to']]);
+        });
+    }
+
+    /**
      * Arma el Excel completo: una hoja por tabla de datos de negocio, con
      * encabezados en español y relaciones ya resueltas a nombres legibles
      * (nunca UUIDs sueltos) para que lo pueda leer cualquier usuario final.
      *
      * $institutionIds / $childIds: null = sin filtro (todo el sistema).
-     * Array (incluso vacío) = restringido a la jurisdicción elegida.
+     * Array (incluso vacío) = restringido a la jurisdicción o al bimestre elegidos.
+     * $dateRange / $periodFilter: mutuamente excluyentes, ver resolveDateRange()
+     * y resolvePeriodFilter(). Ambos null = sin filtro por tiempo.
      */
-    private function buildSpreadsheet(?array $institutionIds, ?array $childIds): Spreadsheet
+    private function buildSpreadsheet(?array $institutionIds, ?array $childIds, ?array $dateRange, ?array $periodFilter): Spreadsheet
     {
         $spreadsheet = new Spreadsheet();
         $index = 0;
 
-        $institutions = Institution::withTrashed()
-            ->with('locality.department.province')
-            ->when($institutionIds !== null, fn ($q) => $q->whereIn('id', $institutionIds))
-            ->orderBy('name')->get();
+        $institutions = $this->scopeDateRange(
+            Institution::withTrashed()
+                ->with('locality.department.province')
+                ->when($institutionIds !== null, fn ($q) => $q->whereIn('id', $institutionIds)),
+            $dateRange
+        )->orderBy('name')->get();
         $this->addSheet($spreadsheet, $index++, 'Instituciones', [
             'ID', 'Nombre', 'Tipo', 'Provincia', 'Departamento', 'Localidad', 'Dirección', 'Teléfono', 'Activa',
             'Ofrece jardín', 'Ofrece primario', 'Años primario', 'Ofrece secundario', 'Años secundario',
@@ -169,9 +289,11 @@ class DatabaseExportController extends Controller
             $this->dt($i->created_at), $this->dt($i->updated_at), $this->dt($i->deleted_at),
         ])->all());
 
-        $users = User::withTrashed()->with('institution')
-            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
-            ->orderBy('name')->get();
+        $users = $this->scopeDateRange(
+            User::withTrashed()->with('institution')
+                ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds)),
+            $dateRange
+        )->orderBy('name')->get();
         $this->addSheet($spreadsheet, $index++, 'Usuarios', [
             'ID', 'Nombre', 'Email', 'Institución', 'Roles', 'Activo', 'Responsable de institución',
             'Creado', 'Actualizado', 'Eliminado',
@@ -181,9 +303,11 @@ class DatabaseExportController extends Controller
             $this->dt($u->created_at), $this->dt($u->updated_at), $this->dt($u->deleted_at),
         ])->all());
 
-        $children = Child::withTrashed()
-            ->when($childIds !== null, fn ($q) => $q->whereIn('id', $childIds))
-            ->orderBy('last_name')->get();
+        $children = $this->scopeDateRange(
+            Child::withTrashed()
+                ->when($childIds !== null, fn ($q) => $q->whereIn('id', $childIds)),
+            $dateRange
+        )->orderBy('last_name')->get();
         $this->addSheet($spreadsheet, $index++, 'Niños', [
             'ID', 'Nombre', 'Apellido', 'Fecha de nacimiento', 'Edad', 'DNI', 'Notas',
             'Creado', 'Actualizado', 'Eliminado',
@@ -192,9 +316,12 @@ class DatabaseExportController extends Controller
             $this->dt($c->created_at), $this->dt($c->updated_at), $this->dt($c->deleted_at),
         ])->all());
 
-        $educationRecords = EducationRecord::withTrashed()->with(['institution', 'child'])
-            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
-            ->get();
+        $educationRecords = $this->scopeDateRange(
+            EducationRecord::withTrashed()->with(['institution', 'child'])
+                ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+                ->when($childIds !== null, fn ($q) => $q->whereIn('child_id', $childIds)),
+            $dateRange
+        )->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. educativos', [
             'ID', 'Niño', 'Institución', 'Escuela', 'Nivel', 'Grado', 'Grado/año (texto libre)',
             'Inasistencias', 'Días asistidos', 'Días totales', 'Período', 'Escolarizado', 'Observaciones',
@@ -208,13 +335,19 @@ class DatabaseExportController extends Controller
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
 
-        $observations = EducationObservation::withTrashed()
-            ->with(['author', 'educationRecord.child', 'educationRecord.institution'])
-            ->when(
-                $institutionIds !== null,
-                fn ($q) => $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
-            )
-            ->get();
+        $observations = $this->scopeDateRange(
+            EducationObservation::withTrashed()
+                ->with(['author', 'educationRecord.child', 'educationRecord.institution'])
+                ->when(
+                    $institutionIds !== null,
+                    fn ($q) => $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+                )
+                ->when(
+                    $childIds !== null,
+                    fn ($q) => $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('child_id', $childIds))
+                ),
+            $dateRange
+        )->get();
         $this->addSheet($spreadsheet, $index++, 'Observaciones educ.', [
             'ID', 'Niño', 'Institución', 'Autor', 'Observación', 'Adjunto', 'Creado', 'Eliminado',
         ], $observations->map(fn (EducationObservation $o) => [
@@ -223,9 +356,12 @@ class DatabaseExportController extends Controller
             $this->dt($o->created_at), $this->dt($o->deleted_at),
         ])->all());
 
-        $healthRecords = HealthRecord::withTrashed()->with(['institution', 'child'])
-            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
-            ->get();
+        $healthRecords = $this->scopeDateRange(
+            HealthRecord::withTrashed()->with(['institution', 'child'])
+                ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+                ->when($childIds !== null, fn ($q) => $q->whereIn('child_id', $childIds)),
+            $dateRange
+        )->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. de salud', [
             'ID', 'Niño', 'Institución', 'Centro de salud', 'Control niño sano al día', 'Vacunas al día',
             'Último control', 'Observaciones', 'Creado', 'Actualizado', 'Eliminado',
@@ -236,9 +372,14 @@ class DatabaseExportController extends Controller
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
 
-        $birthRecords = BirthRecord::withTrashed()->with(['institution', 'child'])
-            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
-            ->get();
+        $birthRecords = $this->scopeDateRange(
+            BirthRecord::withTrashed()->with(['institution', 'child'])
+                ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+                ->when($childIds !== null, fn ($q) => $q->where(function ($q2) use ($childIds) {
+                    $q2->whereIn('child_id', $childIds)->orWhereNull('child_id');
+                })),
+            $dateRange
+        )->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. de nacimiento', [
             'ID', 'Nombre', 'Apellido', 'Niño vinculado', 'Fecha de nacimiento', 'Institución',
             'Nombre de la madre', 'DNI de la madre', 'Nombre del padre', 'DNI del padre',
@@ -250,9 +391,14 @@ class DatabaseExportController extends Controller
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
 
-        $deathRecords = DeathRecord::withTrashed()->with(['institution', 'child'])
-            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
-            ->get();
+        $deathRecords = $this->scopeDateRange(
+            DeathRecord::withTrashed()->with(['institution', 'child'])
+                ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
+                ->when($childIds !== null, fn ($q) => $q->where(function ($q2) use ($childIds) {
+                    $q2->whereIn('child_id', $childIds)->orWhereNull('child_id');
+                })),
+            $dateRange
+        )->get();
         $this->addSheet($spreadsheet, $index++, 'Reg. de defunción', [
             'ID', 'Nombre', 'Apellido', 'Niño vinculado', 'Fecha de nacimiento', 'Fecha de defunción',
             'Institución', 'DNI del niño', 'DNI de la madre', 'Causa de defunción', 'Observaciones',
@@ -264,9 +410,11 @@ class DatabaseExportController extends Controller
             $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
         ])->all());
 
-        $importBatches = ImportBatch::with(['institution', 'uploader'])
-            ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds))
-            ->orderByDesc('created_at')->get();
+        $importBatches = $this->scopeDateRange(
+            ImportBatch::with(['institution', 'uploader'])
+                ->when($institutionIds !== null, fn ($q) => $q->whereIn('institution_id', $institutionIds)),
+            $dateRange
+        )->orderByDesc('created_at')->get();
         $this->addSheet($spreadsheet, $index++, 'Importaciones', [
             'ID', 'Origen', 'Institución', 'Estado', 'Archivo', 'Total filas', 'Procesadas',
             'Coincidencias', 'Parciales', 'Sin coincidencia', 'Errores', 'Subido por',
@@ -278,12 +426,14 @@ class DatabaseExportController extends Controller
             $b->error_message,
         ])->all());
 
-        $importRows = ImportRow::with(['batch', 'child', 'resolver'])
-            ->when(
-                $institutionIds !== null,
-                fn ($q) => $q->whereHas('batch', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
-            )
-            ->orderByDesc('created_at')->get();
+        $importRows = $this->scopeDateRange(
+            ImportRow::with(['batch', 'child', 'resolver'])
+                ->when(
+                    $institutionIds !== null,
+                    fn ($q) => $q->whereHas('batch', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+                ),
+            $dateRange
+        )->orderByDesc('created_at')->get();
         $this->addSheet($spreadsheet, $index++, 'Filas de importación', [
             'ID', 'Lote', 'Estado', 'Nombre normalizado', 'Fecha de nacimiento', 'Confianza de coincidencia',
             'Notas de coincidencia', 'Niño vinculado', 'Resuelto por', 'Resuelto', 'Mensaje de error', 'Línea',
@@ -293,6 +443,45 @@ class DatabaseExportController extends Controller
             $this->childName($row->child), $row->resolver?->name, $this->dt($row->resolved_at),
             $row->error_message, $row->file_line_number,
         ])->all());
+
+        // Las hojas de reportes bimestrales solo se agregan cuando el export está
+        // filtrado por bimestre — en el resto de los casos ese histórico no se pide.
+        if ($periodFilter !== null) {
+            $eduPeriodReports = EducationPeriodReport::withTrashed()
+                ->with(['educationRecord.child', 'educationRecord.institution'])
+                ->where('year', $periodFilter['year'])
+                ->where('bimester', $periodFilter['bimester'])
+                ->whereHas('educationRecord', fn ($q) => $q->whereIn('child_id', $childIds))
+                ->get();
+            $this->addSheet($spreadsheet, $index++, 'Reportes educ. bimestrales', [
+                'ID', 'Niño', 'Institución', 'Año', 'Bimestre', 'Nivel', 'Grado', 'Escolarizado',
+                'Inasistencias', 'Días presentes', 'Días totales', 'Resumen', 'Creado', 'Actualizado', 'Eliminado',
+            ], $eduPeriodReports->map(fn (EducationPeriodReport $r) => [
+                $r->id, $this->childName($r->educationRecord?->child), $r->educationRecord?->institution?->name,
+                $r->year, $r->bimester,
+                $r->level ? EducationRecord::levelLabel($r->level) : null,
+                ($r->level && $r->grade) ? EducationRecord::gradeLabel($r->level, $r->grade) : $r->grade,
+                $this->bool($r->is_enrolled), $r->absences_count, $r->present_days, $r->total_days, $r->summary,
+                $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
+            ])->all());
+
+            $healthPeriodReports = HealthPeriodReport::withTrashed()
+                ->with(['healthRecord.child', 'healthRecord.institution'])
+                ->where('year', $periodFilter['year'])
+                ->where('bimester', $periodFilter['bimester'])
+                ->whereHas('healthRecord', fn ($q) => $q->whereIn('child_id', $childIds))
+                ->get();
+            $this->addSheet($spreadsheet, $index++, 'Reportes salud bimestrales', [
+                'ID', 'Niño', 'Institución', 'Año', 'Bimestre', 'Control niño sano al día', 'Vacunas al día',
+                'Último control', 'Peso (kg)', 'Talla (cm)', 'Resumen', 'Creado', 'Actualizado', 'Eliminado',
+            ], $healthPeriodReports->map(fn (HealthPeriodReport $r) => [
+                $r->id, $this->childName($r->healthRecord?->child), $r->healthRecord?->institution?->name,
+                $r->year, $r->bimester,
+                $this->boolOrUnknown($r->healthy_checkup_current), $this->boolOrUnknown($r->vaccines_current),
+                $this->d($r->last_checkup_date), $r->weight_kg, $r->height_cm, $r->summary,
+                $this->dt($r->created_at), $this->dt($r->updated_at), $this->dt($r->deleted_at),
+            ])->all());
+        }
 
         $this->addSheet($spreadsheet, $index++, 'Roles', ['ID', 'Nombre'], Role::all()
             ->map(fn (Role $r) => [$r->id, $r->name])->all());
@@ -350,13 +539,17 @@ class DatabaseExportController extends Controller
      * Copia los PDF adjuntos de las observaciones educativas dentro del ZIP,
      * con su nombre original, para que sean legibles fuera del sistema.
      */
-    private function addAttachments(ZipArchive $zip, ?array $institutionIds): void
+    private function addAttachments(ZipArchive $zip, ?array $institutionIds, ?array $childIds): void
     {
         $observations = EducationObservation::withTrashed()
             ->whereNotNull('attachment_path')
             ->when(
                 $institutionIds !== null,
                 fn ($q) => $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('institution_id', $institutionIds))
+            )
+            ->when(
+                $childIds !== null,
+                fn ($q) => $q->whereHas('educationRecord', fn ($q2) => $q2->whereIn('child_id', $childIds))
             )
             ->get();
 
@@ -433,23 +626,41 @@ class DatabaseExportController extends Controller
         return Province::find($request->query('province_id'))?->name ?? '—';
     }
 
-    private function manifest(Request $request, ?array $institutionIds): string
+    private function manifest(Request $request, ?array $institutionIds, ?array $dateRange, ?array $periodFilter): string
     {
+        $isFiltered = $institutionIds !== null || $dateRange !== null || $periodFilter !== null;
+
         return implode("\n", [
-            $institutionIds === null
-                ? 'Exportación completa — Sistema de Apoyo a la Crianza'
-                : 'Exportación filtrada por jurisdicción — Sistema de Apoyo a la Crianza',
+            $isFiltered
+                ? 'Exportación filtrada — Sistema de Apoyo a la Crianza'
+                : 'Exportación completa — Sistema de Apoyo a la Crianza',
             'Generada: '.now()->toDateTimeString(),
             'Generada por: '.$request->user()->name.' ('.$request->user()->email.')',
-            ...($institutionIds !== null ? [
+            ...($institutionIds !== null && $periodFilter === null ? [
                 '',
                 'Jurisdicción: '.$this->jurisdictionLabel($request),
                 'Instituciones incluidas: '.count($institutionIds),
             ] : []),
+            ...($dateRange !== null ? [
+                '',
+                'Filtro por tiempo: rango de fechas',
+                'Incluye lo creado y/o actualizado entre '
+                    .$dateRange['from']->format('d/m/Y').' y '.$dateRange['to']->format('d/m/Y').'.',
+            ] : []),
+            ...($periodFilter !== null ? [
+                '',
+                'Filtro por tiempo: bimestre',
+                "Año {$periodFilter['year']} · Bimestre {$periodFilter['bimester']}",
+                'Incluye los reportes bimestrales de ese período y la ficha completa',
+                '(institución, registros, observaciones, nacimiento/defunción) de los',
+                'niños con algún reporte cargado en ese bimestre. Instituciones incluidas: '
+                    .count($institutionIds ?? []).'.',
+            ] : []),
             '',
             'datos.xlsx contiene una hoja por tabla: instituciones, usuarios, niños,',
             'registros educativos y de salud, observaciones educativas, registros de',
-            'nacimiento y defunción, importaciones masivas, roles y permisos.',
+            'nacimiento y defunción, importaciones masivas, roles y permisos'
+                .($periodFilter !== null ? ', más los reportes bimestrales del período elegido' : '').'.',
             '',
             'attachments/ contiene los PDF adjuntos a las observaciones educativas.',
             '',
