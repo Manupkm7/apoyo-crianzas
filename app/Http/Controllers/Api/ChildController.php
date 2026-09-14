@@ -33,6 +33,19 @@ use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 class ChildController extends Controller
 {
     /**
+     * Grupos fijos de localidad para el filtro "institution_locality" de la tabla
+     * de niños: cada uno agrupa TODAS las instituciones (de cualquier sector)
+     * ubicadas en esa localidad puntual. provincia/departamento desambiguan
+     * nombres repetidos entre provincias
+     * (ej. "SAN JUSTO" existe como departamento/localidad en Buenos Aires,
+     * Córdoba y Santa Fe).
+     */
+    private const LOCALITY_FILTERS = [
+        'san_justo' => ['province' => 'Santa Fe', 'department' => 'SAN JUSTO', 'locality' => 'SAN JUSTO'],
+        'uriburu'   => ['province' => 'La Pampa', 'department' => 'CATRILO', 'locality' => 'URIBURU'],
+    ];
+
+    /**
      * Devuelve el listado paginado de niños.
      *
      * El filtrado por institución se aplica automáticamente según el tipo de usuario:
@@ -46,6 +59,8 @@ class ChildController extends Controller
      * - has_education / has_health: '1' o '0' — filtra por si tiene o no ese registro cargado.
      *   Útil porque cada tipo de institución carga un subconjunto distinto de niños.
      * - alert: '1' — solo niños con alguna alerta PENDIENTE (ver ChildAlertEvaluator).
+     * - institution_locality: 'san_justo' | 'uriburu' — solo niños con registro en
+     *   alguna institución de esa localidad fija (ver LOCALITY_FILTERS).
      * - per_page: tamaño de página (máx. 100, default 20).
      *
      * La respuesta incluye `alerts_count`: cuántos niños del resultado filtrado
@@ -127,6 +142,25 @@ class ChildController extends Controller
         }
         if ($request->filled('grade')) {
             $query->whereHas('educationRecord', fn ($q) => $q->where('grade', (int) $request->query('grade')));
+        }
+
+        // Filtro fijo por localidad de institución (ver LOCALITY_FILTERS arriba) —
+        // agrupa niños con registro (educativo o de salud) en CUALQUIER institución
+        // de esa localidad puntual, sin importar el sector.
+        if ($localityKey = $request->query('institution_locality')) {
+            $filter = self::LOCALITY_FILTERS[$localityKey] ?? null;
+
+            if ($filter) {
+                $matchesLocality = fn ($q) => $q
+                    ->where('name', 'ilike', $filter['locality'])
+                    ->whereHas('department', fn ($dq) => $dq
+                        ->where('name', 'ilike', $filter['department'])
+                        ->whereHas('province', fn ($pq) => $pq->where('name', 'ilike', $filter['province'])));
+
+                $query->where(fn ($q) => $q
+                    ->whereHas('educationRecord.institution.locality', $matchesLocality)
+                    ->orWhereHas('healthRecord.institution.locality', $matchesLocality));
+            }
         }
 
         // "Alerta pendiente" según ChildAlertEvaluator: foto vigente o último
