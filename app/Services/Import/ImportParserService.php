@@ -137,6 +137,49 @@ class ImportParserService
     ];
 
     /**
+     * Columnas de PRESTACIÓN que puede traer cualquier hoja (Registro Civil,
+     * Educación o Salud) además de las del niño — es el mismo flujo de matcheo,
+     * la prestación viaja en la misma fila. Se activan solo si la hoja tiene una
+     * columna de nombre de prestación (ver buildFieldMap()), y en ese caso tienen
+     * prioridad: p. ej. "Efector" pasa a ser el efector de la prestación.
+     *
+     * El mismo niño puede aparecer en varias filas (una por prestación). El nombre
+     * completo en una sola columna ("NIÑO") se parte en mapRow() — ver splitFullName().
+     */
+    private const PRESTACION_COLUMNS = [
+        'full_name' => [
+            'niño', 'nino', 'niña', 'nina', 'nombre completo', 'nombre y apellido', 'apellido y nombre',
+            'niño/a', 'nino/a',
+        ],
+        'period' => [
+            'fecha', 'periodo', 'período', 'trimestre', 'bimestre', 'periodo informado', 'período informado',
+        ],
+        'service_number' => [
+            'nro prestacion', 'nro prestación', 'nro. prestacion', 'nro. prestación', 'numero prestacion',
+            'número prestación', 'numero de prestacion', 'número de prestación', 'n prestacion', 'n° prestacion',
+            'n° prestación', 'nº prestacion', 'nº prestación', 'nro',
+        ],
+        'sector' => [
+            'sector', 'area', 'área',
+        ],
+        // Sin 'establecimiento'/'institución': en Registro Civil y Educación esas
+        // cabeceras ya significan otra cosa (lugar de nacimiento, escuela).
+        'provider' => [
+            'efector', 'prestador', 'efector prestacion', 'efector de la prestacion', 'institucion efectora',
+        ],
+        'service_name' => [
+            'nombre prestacion', 'nombre prestación', 'nombre de la prestacion', 'nombre de la prestación',
+            'prestacion', 'prestación', 'tipo prestacion', 'tipo de prestación', 'tipo de prestacion',
+        ],
+        'observations' => [
+            'observaciones', 'observacion', 'observación', 'notas',
+        ],
+        'alert' => [
+            'alerta', 'alertas', 'alerta sat', 'con alerta',
+        ],
+    ];
+
+    /**
      * Parsea el archivo y retorna un iterador de filas ya mapeadas a campos internos.
      *
      * @param UploadedFile $file
@@ -152,6 +195,12 @@ class ImportParserService
             'civil_registry' => self::CIVIL_REGISTRY_COLUMNS,
             'users'          => self::USER_COLUMNS,
             'health'         => self::HEALTH_COLUMNS,
+            // Hoja de prestaciones: identidad del niño + columnas de prestación
+            // (cada fila trae su efector).
+            'services'       => self::PRESTACION_COLUMNS + array_intersect_key(
+                self::HEALTH_COLUMNS,
+                array_flip(['first_name', 'last_name', 'dni', 'birth_date']),
+            ),
             default          => self::EDUCATION_COLUMNS,
         };
 
@@ -269,6 +318,12 @@ class ImportParserService
      */
     private function buildFieldMap(array $headers, array $columnMap): array
     {
+        // Hoja con prestaciones (tiene "Nombre prestación"): se suman sus columnas,
+        // primero, para que ganen ante variantes compartidas ("Efector", "Fecha").
+        if ($this->hasPrestacionColumns($headers)) {
+            $columnMap = self::PRESTACION_COLUMNS + $columnMap;
+        }
+
         $fieldMap = [];
         foreach ($headers as $rawHeader) {
             $normalized = $this->normalizeHeader($rawHeader);
@@ -284,6 +339,22 @@ class ImportParserService
         return $fieldMap;
     }
 
+    private function hasPrestacionColumns(array $headers): bool
+    {
+        $variants = array_map(
+            fn (string $v) => $this->normalizeHeader($v),
+            self::PRESTACION_COLUMNS['service_name'],
+        );
+
+        foreach ($headers as $header) {
+            if ($header !== null && in_array($this->normalizeHeader((string) $header), $variants, true)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function mapRow(array $assocRow, array $fieldMap): array
     {
         $mapped = [];
@@ -293,9 +364,44 @@ class ImportParserService
                 $mapped[$field] = $this->sanitizeValue($field, $value);
             }
         }
+
+        // Nombre completo en una sola columna ("NIÑO": "María Perez") → se parte
+        // en nombre/apellido solo si el archivo no trae columnas separadas.
+        if (! empty($mapped['full_name']) && empty($mapped['first_name']) && empty($mapped['last_name'])) {
+            [$mapped['first_name'], $mapped['last_name']] = $this->splitFullName($mapped['full_name']);
+        }
+
         // Guardar también el raw original para raw_data
         $mapped['_raw'] = $assocRow;
         return $mapped;
+    }
+
+    /**
+     * "Perez, María" → ['María', 'Perez'] (la coma separa apellido de nombre).
+     * "María José Perez" → ['María José', 'Perez'] (sin coma: la última palabra
+     * es el apellido). Un apellido compuesto sin coma queda partido de más, pero
+     * name_normalized ("nombre apellido") sigue siendo el mismo texto completo,
+     * así que el matching por nombre no se ve afectado; el operador puede
+     * corregirlo en la pantalla de revisión antes de confirmar.
+     *
+     * @return array{0: ?string, 1: ?string}
+     */
+    private function splitFullName(string $fullName): array
+    {
+        $fullName = trim(preg_replace('/\s+/u', ' ', $fullName));
+
+        if (str_contains($fullName, ',')) {
+            [$last, $first] = array_map('trim', explode(',', $fullName, 2));
+            return [$first !== '' ? $first : null, $last !== '' ? $last : null];
+        }
+
+        $parts = explode(' ', $fullName);
+        if (count($parts) === 1) {
+            return [$parts[0], null];
+        }
+
+        $last = array_pop($parts);
+        return [implode(' ', $parts), $last];
     }
 
     private function sanitizeValue(string $field, mixed $value): mixed
@@ -315,8 +421,13 @@ class ImportParserService
             return preg_replace('/[\s.]/', '', $value);
         }
 
-        if (in_array($field, ['healthy_checkup_current', 'vaccines_current'])) {
+        if (in_array($field, ['healthy_checkup_current', 'vaccines_current', 'alert'])) {
             return $this->parseNullableBoolean($value);
+        }
+
+        if ($field === 'service_number') {
+            $digits = preg_replace('/\D/', '', $value);
+            return $digits !== '' ? (int) $digits : null;
         }
 
         return $value;

@@ -63,7 +63,8 @@ class ImportMatchingService
         // mano, igual que civil_registry/education cuando no encuentran contraparte.
         // Evita duplicar niños cuando la hoja de salud se procesa antes que las otras y
         // el DNI de esa hoja viene mal cargado (matchChild no lo hubiera detectado).
-        if ($row->isFromHealth()) {
+        // Mismo criterio para la hoja de prestaciones: no tiene fuente opuesta.
+        if ($row->isFromHealth() || $row->isFromServices()) {
             return new MatchResult(
                 0,
                 'none',

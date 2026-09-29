@@ -49,7 +49,10 @@ class ResolveImportRowRequest extends FormRequest
             'overrides.healthy_checkup_current'   => ['nullable', 'boolean'],
             'overrides.vaccines_current'          => ['nullable', 'boolean'],
             'overrides.last_checkup_date'         => ['nullable', 'date'],
-            'overrides.observations'              => ['nullable', 'string', 'max:1000'],
+            'overrides.observations'              => ['nullable', 'string', 'max:3000'],
+            // Prestación que viene en la misma fila (cualquier fuente)
+            'overrides.alert'                     => ['nullable', 'boolean'],
+            'overrides.service_number'            => ['nullable', 'integer', 'min:0', 'max:999999'],
         ];
     }
 

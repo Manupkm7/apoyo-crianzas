@@ -38,6 +38,7 @@ return [
         'Accept',
         'Origin',
         'X-CSRF-TOKEN',
+        'X-Locality-Scope', // ámbito global del sidebar, ver App\Support\LocalityScope
     ],
 
     'exposed_headers' => [],

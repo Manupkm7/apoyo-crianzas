@@ -113,6 +113,16 @@ class Child extends Model
         return $this->hasMany(AlertAcknowledgement::class);
     }
 
+    /**
+     * Prestaciones recibidas por período (salud, cuidado y educación, protección
+     * social...), de cualquier efector. Alimentan las alertas de prestaciones del
+     * SAT (ver ChildAlertEvaluator). Sin orden por defecto.
+     */
+    public function services(): HasMany
+    {
+        return $this->hasMany(ChildService::class);
+    }
+
     public function birthRecord(): HasOne
     {
         return $this->hasOne(BirthRecord::class);

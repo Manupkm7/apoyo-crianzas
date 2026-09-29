@@ -20,7 +20,8 @@ use Illuminate\Http\JsonResponse;
  *
  * Quién puede: la institución dueña del registro del sector (con permiso de
  * gestión de niños) o el admin — misma regla que editar ese registro, de ahí
- * que se reutilice Education/HealthRecordPolicy::update.
+ * que se reutilice Education/HealthRecordPolicy::update. Las alertas de
+ * prestaciones (alerta_prestacion, prestacion_obligatoria_faltante) solo el admin.
  */
 class ChildAlertController extends Controller
 {
@@ -29,17 +30,27 @@ class ChildAlertController extends Controller
         $sector = ChildAlertEvaluator::sectorForType($type);
         abort_if($sector === null, 404, 'Tipo de alerta desconocido.');
 
-        $child->load([
-            'educationRecord.latestPeriodReport',
-            'healthRecord.latestPeriodReport',
-        ]);
+        if ($sector === ChildAlertEvaluator::SECTOR_PRESTACIONES) {
+            // Las alertas de prestaciones cruzan todos los sectores y efectores (no
+            // hay una "institución dueña"): solo las gestiona el admin.
+            abort_unless(
+                $request->user()->hasRole('admin'),
+                403,
+                'Solo el administrador puede gestionar alertas de prestaciones.',
+            );
+        } else {
+            $child->load([
+                'educationRecord.latestPeriodReport',
+                'healthRecord.latestPeriodReport',
+            ]);
 
-        $record = $sector === 'educacion' ? $child->educationRecord : $child->healthRecord;
-        abort_if($record === null, 404, 'El niño no tiene registro en ese sector.');
+            $record = $sector === 'educacion' ? $child->educationRecord : $child->healthRecord;
+            abort_if($record === null, 404, 'El niño no tiene registro en ese sector.');
 
-        // "Institución dueña del registro + admin" (coordinador queda afuera:
-        // Education/HealthRecordPolicy::update no lo contempla).
-        $this->authorize('update', $record);
+            // "Institución dueña del registro + admin" (coordinador queda afuera:
+            // Education/HealthRecordPolicy::update no lo contempla).
+            $this->authorize('update', $record);
+        }
 
         abort_unless(
             ChildAlertEvaluator::conditionHolds($child, $type),

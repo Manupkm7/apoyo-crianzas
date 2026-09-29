@@ -2,6 +2,7 @@
 
 namespace App\Http\Requests;
 
+use App\Support\Sector;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -67,7 +68,9 @@ class UpdateInstitutionRequest extends FormRequest
                     ->ignore($institutionId)
                     ->whereNull('deleted_at'),
             ],
-            'type'        => ['sometimes', Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro'])],
+            // Sector (= tipo). Acepta también los heredados ('justicia') para no
+            // romper la edición de instituciones viejas.
+            'type'        => ['sometimes', Rule::in(Sector::institutionTypes())],
             'locality_id' => ['sometimes', 'uuid', 'exists:localities,id'],
             'is_active'   => ['sometimes', 'boolean'],
 
@@ -77,7 +80,20 @@ class UpdateInstitutionRequest extends FormRequest
             'primario_years'    => ['nullable', 'integer', Rule::in([6, 7])],
             'offers_secundario' => ['sometimes', 'boolean'],
             'secundario_years'  => ['nullable', 'integer', Rule::in([6, 7])],
+
+            // Ficha del efector (solo admin)
+            ...StoreInstitutionRequest::providerProfileRules(),
         ]);
+    }
+
+    public function withValidator($validator): void
+    {
+        $validator->after(function ($validator) {
+            $self = $this->route('institution')?->id;
+            if ($self && in_array($self, $this->input('articulation_ids', []) ?: [], true)) {
+                $validator->errors()->add('articulation_ids', 'Una institución no puede articular consigo misma.');
+            }
+        });
     }
 
     /**
@@ -87,7 +103,10 @@ class UpdateInstitutionRequest extends FormRequest
     {
         return [
             'name.unique' => 'Ya existe otra institución con ese nombre.',
-            'type.in'     => 'El tipo debe ser: salud, educacion, desarrollo_social, justicia u otro.',
+            'type.in'     => 'El sector no es válido.',
+            'administrative_dependency.in' => 'La dependencia administrativa debe ser Estatal, Privado, Comunitario u Otros.',
+            'program_area_id.exists'       => 'La dependencia programática elegida no existe.',
+            'articulation_ids.*.exists'    => 'Una de las instituciones articuladas no existe o fue dada de baja.',
         ];
     }
 }

@@ -6,6 +6,7 @@ use App\Models\ImportBatch;
 use App\Models\ImportRow;
 use App\Services\Import\ImportMatchingService;
 use App\Services\Import\ImportParserService;
+use App\Services\Import\ServiceRowNormalizer;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
@@ -38,6 +39,9 @@ use Illuminate\Support\Facades\Storage;
  *        disponible para retroactive matching)
  *      - 'health' no tiene una fuente opuesta con la que emparejarse: si matchChild() no
  *        encontró candidato, queda directo en 'no_match' (ver ImportMatchingService::match())
+ *   Cualquier fuente puede traer en la misma fila una prestación por período: se
+ *   valida período/sector/efector antes de guardar la fila (ServiceRowNormalizer)
+ *   — si algo no cierra, la fila queda en 'error'.
  *   5. Actualiza contadores del batch
  *
  * Retroactive matching: cuando educación llega DESPUÉS de registro civil ya importado,
@@ -60,7 +64,7 @@ class ProcessImportBatch implements ShouldQueue
         private readonly ?string $sheetName = null, // hoja del xlsx a procesar (null = activa / csv-txt)
     ) {}
 
-    public function handle(ImportParserService $parser, ImportMatchingService $matcher): void
+    public function handle(ImportParserService $parser, ImportMatchingService $matcher, ServiceRowNormalizer $serviceNormalizer): void
     {
         $batch = ImportBatch::findOrFail($this->batchId);
         $batch->markAsProcessing();
@@ -99,6 +103,17 @@ class ProcessImportBatch implements ShouldQueue
                         // contra CUALQUIER otra fila igual de incompleta.
                         $this->markRowError($batch->id, $lineNumber, $rowData, 'Falta nombre y/o apellido en esta fila. Revisar el mapeo de columnas del archivo.');
                         continue;
+                    }
+
+                    // Si la fila trae además una prestación (misma fila que identifica al
+                    // niño): período, sector, efector (institución del sistema) y nombre
+                    // de la prestación se validan acá — si algo no cierra, la fila queda
+                    // en 'error' con el motivo (lo atrapa el catch de abajo).
+                    if (ServiceRowNormalizer::hasService($rowData)) {
+                        $rowData = $serviceNormalizer->normalize($rowData);
+                    } elseif ($batch->source === 'services') {
+                        // En la hoja de prestaciones cada fila ES una prestación.
+                        throw new \InvalidArgumentException('La fila no trae prestación (faltan "Fecha" y "Nombre prestación").');
                     }
 
                     $importRow = $this->createImportRow($batch->id, $lineNumber, $rowData);
@@ -214,7 +229,7 @@ class ProcessImportBatch implements ShouldQueue
      */
     private function processRow(ImportBatch $batch, ImportMatchingService $matcher, ImportRow $importRow, array $rowData): void
     {
-        if (in_array($batch->source, ['civil_registry', 'education', 'health'], true)) {
+        if (in_array($batch->source, ['civil_registry', 'education', 'health', 'services'], true)) {
             $childResult = $matcher->matchChild($importRow);
 
             if ($childResult->confidence > 0) {

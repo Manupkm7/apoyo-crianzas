@@ -50,6 +50,22 @@ class ImportTemplateService
         ['label' => 'Observaciones',          'required' => false, 'example' => '',                     'help' => 'Notas adicionales, opcional.'],
     ];
 
+    /**
+     * Hoja de prestaciones: una fila por prestación, cada una con su efector (el
+     * mismo niño puede repetirse). Pasa por el mismo flujo de matcheo de niños.
+     */
+    private const SERVICES_FIELDS = [
+        ['label' => 'Fecha',             'required' => true,  'example' => 'TRIM12026',            'help' => 'Período informado: TRIM + número + año (TRIM12026 = trimestre 1 de 2026) o BIM + número + año (BIM32026).'],
+        ['label' => 'DNI',               'required' => false, 'example' => '41222333',             'help' => 'DNI del niño o niña, sin puntos ni espacios. Muy recomendable: es la señal más confiable para identificarlo.'],
+        ['label' => 'Niño',              'required' => true,  'example' => 'María Perez',          'help' => 'Nombre y apellido (o "Apellido, Nombre"). También se aceptan columnas separadas "Nombre" y "Apellido".'],
+        ['label' => 'Nro prestación',    'required' => false, 'example' => '1',                    'help' => 'Número de la prestación dentro del registro del organismo.'],
+        ['label' => 'Sector',            'required' => true,  'example' => 'Salud',                'help' => 'Salud / Cuidado y educación / Protección social / Recreación, deporte y cultura / Otro.'],
+        ['label' => 'Efector',           'required' => true,  'example' => 'CAP 1',                'help' => 'Nombre EXACTO de la institución (efector) tal como está dada de alta en el sistema. Si es de Salud o de Cuidado y educación, el niño queda asociado a ella (si no tenía institución en ese sector).'],
+        ['label' => 'Nombre prestación', 'required' => true,  'example' => 'Control de niño sano', 'help' => 'Si no existe en el catálogo de prestaciones, se agrega al confirmar la fila.'],
+        ['label' => 'Observaciones',     'required' => false, 'example' => 's/d',                  'help' => 'Texto libre. "s/d" = sin dato.'],
+        ['label' => 'Alerta',            'required' => false, 'example' => 'NO',                   'help' => 'SI / NO. Con SI, la prestación genera una alerta en el sistema.'],
+    ];
+
     private const USER_FIELDS = [
         ['label' => 'ID_NOMBRE',   'required' => true, 'example' => 'Juan',        'help' => 'Nombre de la persona.'],
         ['label' => 'ID_APELLIDO','required' => true, 'example' => 'Pérez',        'help' => 'Apellido de la persona.'],
@@ -61,6 +77,7 @@ class ImportTemplateService
         'civil_registry' => 'Registro Civil',
         'education'      => 'Educación',
         'health'         => 'Salud',
+        'services'       => 'Prestaciones',
         'users'          => 'Usuarios',
     ];
 
@@ -68,6 +85,7 @@ class ImportTemplateService
         'civil_registry' => 'registro_civil',
         'education'      => 'educacion',
         'health'         => 'salud',
+        'services'       => 'prestaciones',
         'users'          => 'usuarios',
     ];
 
@@ -90,6 +108,7 @@ class ImportTemplateService
             'civil_registry' => self::CIVIL_REGISTRY_FIELDS,
             'users'          => self::USER_FIELDS,
             'health'         => self::HEALTH_FIELDS,
+            'services'       => self::SERVICES_FIELDS,
             default          => self::EDUCATION_FIELDS,
         };
     }

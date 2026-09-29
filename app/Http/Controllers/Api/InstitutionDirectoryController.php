@@ -5,6 +5,7 @@ namespace App\Http\Controllers\Api;
 use App\Http\Controllers\Controller;
 use App\Http\Resources\InstitutionDirectoryResource;
 use App\Models\Institution;
+use App\Support\Sector;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Validation\Rule;
@@ -22,7 +23,7 @@ class InstitutionDirectoryController extends Controller
     {
         $request->validate([
             'locality_id' => ['required', 'uuid', 'exists:localities,id'],
-            'type' => ['required', Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro'])],
+            'type' => ['required', Rule::in(Sector::institutionTypes())],
         ]);
 
         $institutions = Institution::query()

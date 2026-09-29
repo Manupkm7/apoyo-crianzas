@@ -18,6 +18,7 @@ use App\Models\Institution;
 use App\Models\Locality;
 use App\Models\Province;
 use App\Models\User;
+use App\Support\LocalityScope;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -62,6 +63,9 @@ class DatabaseExportController extends Controller
             'date_to'         => ['nullable', 'date', 'after_or_equal:date_from', 'required_with:date_from'],
             'period_year'     => ['nullable', 'integer', 'between:2000,2100', 'required_with:period_bimester'],
             'period_bimester' => ['nullable', 'integer', 'between:1,5', 'required_with:period_year'],
+            // El header X-Locality-Scope viaja en TODOS los requests: el export
+            // solo lo respeta si el admin eligió explícitamente "según el ámbito".
+            'apply_locality_scope' => ['nullable', 'boolean'],
         ], [
             'date_to.after_or_equal' => 'La fecha hasta no puede ser anterior a la fecha desde.',
         ]);
@@ -82,6 +86,17 @@ class DatabaseExportController extends Controller
         // null = sin filtro (exporta todo, comportamiento por defecto). Array
         // (incluso vacío) = restringido a las instituciones de esa jurisdicción.
         $institutionIds = $this->resolveJurisdictionInstitutionIds($request);
+
+        // Ámbito global del sidebar (opcional): se combina por intersección con
+        // la jurisdicción si también se eligió una.
+        $localityKey = $request->boolean('apply_locality_scope') ? LocalityScope::fromRequest($request) : null;
+        if ($localityKey !== null) {
+            $localityInstitutionIds = LocalityScope::institutionIds($localityKey);
+            $institutionIds = $institutionIds === null
+                ? $localityInstitutionIds
+                : array_values(array_intersect($institutionIds, $localityInstitutionIds));
+        }
+
         $childIds = $this->resolveChildIdsForInstitutions($institutionIds);
 
         $dateRange = $this->resolveDateRange($request);
@@ -106,13 +121,14 @@ class DatabaseExportController extends Controller
         $zip->open($zipPath, ZipArchive::CREATE | ZipArchive::OVERWRITE);
         $zip->addFile($xlsxPath, 'datos.xlsx');
         $this->addAttachments($zip, $institutionIds, $childIds);
-        $zip->addFromString('LEEME.txt', $this->manifest($request, $institutionIds, $dateRange, $periodFilter));
+        $zip->addFromString('LEEME.txt', $this->manifest($request, $institutionIds, $dateRange, $periodFilter, $localityKey));
         $zip->close();
 
         @unlink($xlsxPath);
 
         activity('export')
             ->causedBy($request->user())
+            ->withProperties(['locality_scope' => $localityKey])
             ->log('Descargó una exportación completa de la base de datos');
 
         return response()->download($zipPath, "export_{$stamp}.zip")->deleteFileAfterSend(true);
@@ -569,14 +585,7 @@ class DatabaseExportController extends Controller
 
     private function institutionTypeLabel(string $type): string
     {
-        return match ($type) {
-            'salud'             => 'Salud',
-            'educacion'         => 'Educación',
-            'desarrollo_social' => 'Desarrollo Social',
-            'justicia'          => 'Justicia',
-            'otro'              => 'Otro',
-            default             => ucfirst($type),
-        };
+        return \App\Support\Sector::label($type);
     }
 
     private function childName(?Child $child): ?string
@@ -626,9 +635,10 @@ class DatabaseExportController extends Controller
         return Province::find($request->query('province_id'))?->name ?? '—';
     }
 
-    private function manifest(Request $request, ?array $institutionIds, ?array $dateRange, ?array $periodFilter): string
+    private function manifest(Request $request, ?array $institutionIds, ?array $dateRange, ?array $periodFilter, ?string $localityKey): string
     {
         $isFiltered = $institutionIds !== null || $dateRange !== null || $periodFilter !== null;
+        $hasJurisdiction = $request->filled('locality_id') || $request->filled('department_id') || $request->filled('province_id');
 
         return implode("\n", [
             $isFiltered
@@ -636,9 +646,13 @@ class DatabaseExportController extends Controller
                 : 'Exportación completa — Sistema de Apoyo a la Crianza',
             'Generada: '.now()->toDateTimeString(),
             'Generada por: '.$request->user()->name.' ('.$request->user()->email.')',
-            ...($institutionIds !== null && $periodFilter === null ? [
+            ...($localityKey !== null ? [
                 '',
-                'Jurisdicción: '.$this->jurisdictionLabel($request),
+                'Ámbito: '.LocalityScope::label($localityKey),
+            ] : []),
+            ...($institutionIds !== null && $periodFilter === null ? [
+                ...($localityKey === null ? [''] : []),
+                ...($hasJurisdiction ? ['Jurisdicción: '.$this->jurisdictionLabel($request)] : []),
                 'Instituciones incluidas: '.count($institutionIds),
             ] : []),
             ...($dateRange !== null ? [

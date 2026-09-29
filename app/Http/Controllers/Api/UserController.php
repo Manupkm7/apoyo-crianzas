@@ -8,6 +8,7 @@ use App\Http\Requests\UpdateUserRequest;
 use App\Http\Resources\ActivityResource;
 use App\Http\Resources\UserResource;
 use App\Models\User;
+use App\Support\LocalityScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -52,6 +53,13 @@ class UserController extends Controller
                 fn ($q) => $q
                     ->where('institution_id', $authUser->institution_id)
                     ->whereHas('roles', fn ($r) => $r->where('name', 'representante'))
+            )
+            // Ámbito global del sidebar (solo admin/coordinador): usuarios de las
+            // instituciones de esa localidad. Los usuarios sin institución (admin,
+            // coordinador) no pertenecen a ninguna localidad y quedan afuera.
+            ->when(
+                LocalityScope::fromRequest($request),
+                fn ($q, string $localityKey) => $q->whereIn('institution_id', LocalityScope::institutionIdsSubquery($localityKey))
             )
             ->orderBy('name')
             ->paginate(20);

@@ -5,12 +5,15 @@ namespace App\Models;
 use App\Contracts\SystemActor;
 use App\Models\Concerns\HasInstitutionalRoleChecks;
 use App\Models\Concerns\HasLoginLockout;
+use Illuminate\Database\Eloquent\Collection as EloquentCollection;
 use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Facades\DB;
 use Laravel\Sanctum\HasApiTokens;
 use Spatie\Activitylog\Support\LogOptions;
 use Spatie\Activitylog\Models\Concerns\LogsActivity;
@@ -56,6 +59,13 @@ class Institution extends Authenticatable implements SystemActor
         'created_by',
         'updated_by',
 
+        // Ficha del efector (un efector ES una institución). 'code' (ID_EFECTOR)
+        // no va acá: lo genera la base (secuencia institutions_code_seq).
+        'administrative_dependency',
+        'program_area_id',
+        'beneficiaries',
+        'observations',
+
         // Login institucional y bloqueo por intentos fallidos. Los setean
         // InstitutionController::store / ::resetPassword y el trait HasLoginLockout
         // vía asignación masiva; sin estar acá Laravel los descartaba en silencio
@@ -89,6 +99,7 @@ class Institution extends Authenticatable implements SystemActor
     protected function casts(): array
     {
         return [
+            'code'              => 'integer',
             'is_active'         => 'boolean',
             'offers_jardin'     => 'boolean',
             'offers_primario'   => 'boolean',
@@ -109,6 +120,7 @@ class Institution extends Authenticatable implements SystemActor
                 'name', 'type', 'is_active',
                 'offers_jardin', 'offers_primario', 'primario_years',
                 'offers_secundario', 'secundario_years',
+                'administrative_dependency', 'program_area_id', 'beneficiaries', 'observations',
             ])
             ->logOnlyDirty();
     }
@@ -121,6 +133,87 @@ class Institution extends Authenticatable implements SystemActor
     public function locality(): BelongsTo
     {
         return $this->belongsTo(Locality::class);
+    }
+
+    public function programArea(): BelongsTo
+    {
+        return $this->belongsTo(ProgramArea::class);
+    }
+
+    // ── Articulaciones (con qué otros efectores trabaja) ───────────────────────
+    // Relación simétrica: si A articula con B, B articula con A. Se guarda una
+    // sola fila por par en institution_articulations (institution_a_id < institution_b_id).
+
+    /** @return Collection<int, string> ids de las instituciones articuladas */
+    public function articulatedInstitutionIds(): Collection
+    {
+        return DB::table('institution_articulations')
+            ->where('institution_a_id', $this->id)
+            ->pluck('institution_b_id')
+            ->merge(
+                DB::table('institution_articulations')
+                    ->where('institution_b_id', $this->id)
+                    ->pluck('institution_a_id')
+            )
+            ->values();
+    }
+
+    /** Instituciones articuladas (sin las dadas de baja), por nombre. */
+    public function articulatedInstitutions(): EloquentCollection
+    {
+        return self::whereIn('id', $this->articulatedInstitutionIds())
+            ->orderBy('name')
+            ->get(['id', 'code', 'name', 'type', 'is_active']);
+    }
+
+    /**
+     * Reemplaza las articulaciones de esta institución por $ids (agrega las
+     * nuevas y quita las que ya no están). Los ids propios se ignoran.
+     *
+     * @param  list<string>  $ids
+     * @return array{added: list<string>, removed: list<string>}
+     */
+    public function syncArticulations(array $ids, ?string $createdBy = null): array
+    {
+        $wanted  = collect($ids)->map(fn ($id) => strtolower((string) $id))
+            ->reject(fn ($id) => $id === strtolower($this->id))
+            ->unique()
+            ->values();
+        $current = $this->articulatedInstitutionIds()->map(fn ($id) => strtolower((string) $id));
+
+        $added   = $wanted->diff($current)->values();
+        $removed = $current->diff($wanted)->values();
+
+        DB::transaction(function () use ($added, $removed, $createdBy) {
+            foreach ($removed as $otherId) {
+                [$a, $b] = self::orderedPair($this->id, $otherId);
+                DB::table('institution_articulations')
+                    ->where('institution_a_id', $a)
+                    ->where('institution_b_id', $b)
+                    ->delete();
+            }
+
+            foreach ($added as $otherId) {
+                [$a, $b] = self::orderedPair($this->id, $otherId);
+                DB::table('institution_articulations')->insertOrIgnore([
+                    'institution_a_id' => $a,
+                    'institution_b_id' => $b,
+                    'created_by'       => $createdBy,
+                    'created_at'       => now(),
+                ]);
+            }
+        });
+
+        return ['added' => $added->all(), 'removed' => $removed->all()];
+    }
+
+    /** Mismo orden que el CHECK de la tabla (uuid de Postgres compara como el hex en minúsculas). */
+    private static function orderedPair(string $x, string $y): array
+    {
+        $x = strtolower($x);
+        $y = strtolower($y);
+
+        return strcmp($x, $y) < 0 ? [$x, $y] : [$y, $x];
     }
 
     /**

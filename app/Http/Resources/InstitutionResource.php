@@ -2,6 +2,8 @@
 
 namespace App\Http\Resources;
 
+use App\Support\AdministrativeDependency;
+use App\Support\Sector;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -15,6 +17,18 @@ use Illuminate\Http\Resources\Json\JsonResource;
 class InstitutionResource extends JsonResource
 {
     /**
+     * Incluir las articulaciones (efectores con los que trabaja). Se activa en el
+     * detalle / alta / edición — en el listado costaría una consulta por fila.
+     */
+    public bool $includeArticulations = false;
+
+    public function withArticulations(): static
+    {
+        $this->includeArticulations = true;
+        return $this;
+    }
+
+    /**
      * Convierte el modelo Institution en un array JSON para la respuesta.
      *
      * Incluye una etiqueta legible del tipo de institución (type_label)
@@ -26,9 +40,34 @@ class InstitutionResource extends JsonResource
     {
         return [
             'id'          => $this->id,
+            // ID_EFECTOR: número correlativo legible generado por la base
+            'code'        => $this->code,
             'name'        => $this->name,
+            // type = sector (misma cosa, ver App\Support\Sector)
             'type'        => $this->type,
-            'type_label'  => $this->typeLabel(),
+            'type_label'  => Sector::label($this->type),
+
+            // Ficha del efector
+            'administrative_dependency'       => $this->administrative_dependency,
+            'administrative_dependency_label' => AdministrativeDependency::label($this->administrative_dependency),
+            'program_area' => $this->whenLoaded('programArea', fn () => $this->programArea ? [
+                'id'   => $this->programArea->id,
+                'name' => $this->programArea->name,
+            ] : null),
+            'beneficiaries' => $this->beneficiaries,
+            'observations'  => $this->observations,
+            'articulations' => $this->when($this->includeArticulations, fn () => $this->resource
+                ->articulatedInstitutions()
+                ->map(fn ($i) => [
+                    'id'         => $i->id,
+                    'code'       => $i->code,
+                    'name'       => $i->name,
+                    'type'       => $i->type,
+                    'type_label' => Sector::label($i->type),
+                    'is_active'  => (bool) $i->is_active,
+                ])
+                ->values()),
+
             'address'     => $this->address,
             'phone'       => $this->phone,
             'locality_id' => $this->locality_id,
@@ -67,22 +106,5 @@ class InstitutionResource extends JsonResource
             'created_at'  => $this->created_at?->toISOString(),
             'updated_at'  => $this->updated_at?->toISOString(),
         ];
-    }
-
-    /**
-     * Convierte el valor interno del tipo en una etiqueta legible en español.
-     *
-     * Por ejemplo: 'desarrollo_social' → 'Desarrollo Social'
-     */
-    private function typeLabel(): string
-    {
-        return match ($this->type) {
-            'salud'            => 'Salud',
-            'educacion'        => 'Educación',
-            'desarrollo_social'=> 'Desarrollo Social',
-            'justicia'         => 'Justicia',
-            'otro'             => 'Otro',
-            default            => ucfirst($this->type),
-        };
     }
 }

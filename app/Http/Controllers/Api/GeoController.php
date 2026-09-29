@@ -7,7 +7,9 @@ use App\Http\Resources\DepartmentResource;
 use App\Http\Resources\LocalityResource;
 use App\Http\Resources\ProvinceResource;
 use App\Models\Department;
+use App\Models\Institution;
 use App\Models\Province;
+use App\Support\Sector;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 
 /**
@@ -40,19 +42,18 @@ class GeoController extends Controller
     }
 
     /**
-     * "Sector" reutiliza el enum ya existente de institutions.type — no hay
-     * una tabla de sectores separada (ver StoreInstitutionRequest::rules()).
+     * "Sector" = institutions.type (misma cosa) — ver App\Support\Sector.
+     * 'justicia' se sigue ofreciendo en el login mientras haya instituciones
+     * heredadas de ese tipo, para que puedan seguir entrando.
      */
     public function sectors(): array
     {
-        return [
-            'data' => [
-                ['value' => 'salud', 'label' => 'Salud'],
-                ['value' => 'educacion', 'label' => 'Educación'],
-                ['value' => 'desarrollo_social', 'label' => 'Desarrollo Social'],
-                ['value' => 'justicia', 'label' => 'Justicia'],
-                ['value' => 'otro', 'label' => 'Otro'],
-            ],
-        ];
+        $options = Sector::options();
+
+        if (Institution::where('type', 'justicia')->where('is_active', true)->exists()) {
+            $options[] = ['value' => 'justicia', 'label' => Sector::label('justicia')];
+        }
+
+        return ['data' => $options];
     }
 }

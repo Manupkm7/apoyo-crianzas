@@ -7,6 +7,7 @@ use App\Http\Requests\StoreInstitutionRequest;
 use App\Http\Requests\UpdateInstitutionRequest;
 use App\Http\Resources\InstitutionResource;
 use App\Models\Institution;
+use App\Support\LocalityScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -51,8 +52,16 @@ class InstitutionController extends Controller
                 ! $request->user()->canBypassRls(),
                 fn ($q) => $q->where('id', $request->user()->institution_id)
             )
+            // Ámbito global del sidebar (solo admin/coordinador). Los desplegables
+            // de formularios lo desactivan desde el frontend (header 'none').
+            ->when(
+                LocalityScope::fromRequest($request),
+                fn ($q, string $localityKey) => LocalityScope::applyToInstitutions($q, $localityKey)
+            )
             ->orderBy('name')
-            ->paginate(20);
+            // ?per_page= para los desplegables que necesitan todas (ej. elegir el
+            // efector de una prestación); el listado sigue paginando de a 20.
+            ->paginate(max(1, min((int) $request->query('per_page', 20), 500)));
 
         return InstitutionResource::collection($institutions);
     }
@@ -68,12 +77,12 @@ class InstitutionController extends Controller
         $this->authorize('view', $institution);
 
         // Cargamos el conteo de usuarios y la cadena de jurisdicción para el detalle
-        $institution->load('locality.department.province');
+        $institution->load(['locality.department.province', 'programArea']);
         $institution->loadCount([
             'users' => fn ($q) => $q->where('is_active', true),
         ]);
 
-        return new InstitutionResource($institution);
+        return (new InstitutionResource($institution))->withArticulations();
     }
 
     /**
@@ -94,15 +103,27 @@ class InstitutionController extends Controller
         // sola vez en esta respuesta: no queda recuperable después.
         $plainPassword = Str::password(16);
 
+        $data = $request->validated();
+        $articulationIds = $data['articulation_ids'] ?? null;
+        unset($data['articulation_ids']);
+
         $institution = Institution::create([
-            ...$request->validated(),
+            ...$data,
             'password'              => $plainPassword,
             'password_must_change'  => true,
             // Registramos el ID del admin que creó esta institución
             'created_by' => $request->user()->id,
         ]);
 
+        if ($articulationIds !== null) {
+            $institution->syncArticulations($articulationIds, $request->user()->auditId());
+        }
+
+        // refresh(): 'code' (ID_EFECTOR) lo genera la base con su secuencia.
+        $institution->refresh()->load(['locality.department.province', 'programArea']);
+
         return (new InstitutionResource($institution))
+            ->withArticulations()
             ->additional(['initial_password' => $plainPassword])
             ->response()
             ->setStatusCode(201); // 201 Created
@@ -154,13 +175,25 @@ class InstitutionController extends Controller
         // 2. InstitutionPolicy::update() — verificación por modelo (quién puede editar cuál)
         $this->authorize('update', $institution);
 
+        $data = $request->validated();
+        $articulationIds = $data['articulation_ids'] ?? null;
+        unset($data['articulation_ids']);
+
         $institution->update([
-            ...$request->validated(),
+            ...$data,
             // Registramos el ID del admin que modificó esta institución
             'updated_by' => $request->user()->id,
         ]);
 
-        return new InstitutionResource($institution);
+        // Solo si vino en el request (solo admin lo puede mandar): lista completa,
+        // se agregan las nuevas y se quitan las que ya no están.
+        if ($articulationIds !== null) {
+            $institution->syncArticulations($articulationIds, $request->user()->auditId());
+        }
+
+        $institution->load(['locality.department.province', 'programArea']);
+
+        return (new InstitutionResource($institution))->withArticulations();
     }
 
     /**

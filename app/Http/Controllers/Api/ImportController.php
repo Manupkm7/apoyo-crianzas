@@ -11,14 +11,17 @@ use App\Http\Resources\ImportRowResource;
 use App\Jobs\ProcessImportBatch;
 use App\Models\BirthRecord;
 use App\Models\Child;
+use App\Models\ChildService;
 use App\Models\EducationRecord;
 use App\Models\HealthRecord;
 use App\Models\ImportBatch;
 use App\Models\ImportRow;
 use App\Models\Institution;
+use App\Models\ServiceType;
 use App\Services\Import\ImportMatchingService;
 use App\Services\Import\ImportParserService;
 use App\Services\Import\ImportTemplateService;
+use App\Services\Import\ServiceRowNormalizer;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -181,7 +184,7 @@ class ImportController extends Controller
         abort_unless($request->user()->can('importaciones.gestionar'), 403, 'No tiene permiso para descargar plantillas de importación.');
 
         $data = $request->validate([
-            'source' => ['required', 'in:civil_registry,education,health'],
+            'source' => ['required', 'in:civil_registry,education,health,services'],
             'format' => ['required', 'in:xlsx,csv,txt'],
         ]);
 
@@ -473,7 +476,7 @@ class ImportController extends Controller
                 'match_notes'        => $reopenNote,
             ]);
 
-            if (in_array($batch->source, ['civil_registry', 'education', 'health'], true)) {
+            if (in_array($batch->source, ['civil_registry', 'education', 'health', 'services'], true)) {
                 $childResult = $matcher->matchChild($row);
 
                 if ($childResult->confidence > 0) {
@@ -538,6 +541,11 @@ class ImportController extends Controller
      * $overrides: correcciones que el operador tipeó a mano antes de confirmar (ver
      * ResolveImportRowRequest) — pisan los datos de ESTA fila ($raw), nunca los de
      * la contraparte, así que solo tienen efecto real cuando $dataSource !== 'matched_row'.
+     *
+     * Prestaciones: si la fila (o su contraparte) trae columnas de prestación
+     * (ver ServiceRowNormalizer::hasService()), además del registro de dominio se
+     * carga la prestación del niño. Es el mismo flujo de matcheo: la prestación
+     * viaja en la misma fila que identifica al niño.
      */
     private function confirmRow(ImportRow $row, ?string $childId, string $userId, ImportBatch $batch, string $dataSource = 'row', array $overrides = []): void
     {
@@ -554,12 +562,21 @@ class ImportController extends Controller
                 ? Child::findOrFail($childId)
                 : $this->createChildFromRow($childSourceRaw, $userId);
 
-            // Crear el registro de dominio correspondiente a la fuente del batch
+            // Crear el registro de dominio correspondiente a la fuente del batch.
+            // Hoja de prestaciones: no hay una institución de la hoja — cada fila
+            // trae su efector, y el vínculo lo arma linkChildToProvider().
             match ($batch->source) {
                 'civil_registry' => $this->createBirthRecordIfAbsent($child, $raw, $batch->institution_id),
                 'health'         => $this->createHealthRecordIfAbsent($child, $raw, $batch->institution_id),
+                'services'       => null,
                 default          => $this->createEducationRecordIfAbsent($child, $raw, $batch->institution_id),
             };
+
+            // + la prestación, si la fila trae una (asociada a SU efector)
+            if (ServiceRowNormalizer::hasService($raw)) {
+                $this->createChildServiceFromRow($child, $raw, $row, $userId);
+                $this->linkChildToProvider($child, $raw);
+            }
 
             // Actualizar esta fila
             $row->update([
@@ -576,8 +593,14 @@ class ImportController extends Controller
                 match ($matchedBatch->source) {
                     'civil_registry' => $this->createBirthRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id),
                     'health'         => $this->createHealthRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id),
+                    'services'       => null,
                     default          => $this->createEducationRecordIfAbsent($child, $matchedRaw, $matchedBatch->institution_id),
                 };
+
+                if (ServiceRowNormalizer::hasService($matchedRaw)) {
+                    $this->createChildServiceFromRow($child, $matchedRaw, $matchedRow, $userId);
+                    $this->linkChildToProvider($child, $matchedRaw);
+                }
 
                 $matchedRow->update([
                     'status'      => 'manual_resolved',
@@ -665,6 +688,104 @@ class ImportController extends Controller
                 'absences_count' => 0,
             ]
         );
+    }
+
+    /**
+     * Prestación por período que viene en la misma fila del niño. El efector, el período y el
+     * sector ya se resolvieron al procesar el archivo (ServiceRowNormalizer); acá
+     * se revalida el efector por si cambió algo entre la carga y la confirmación.
+     *
+     * Si la prestación no está en el catálogo se agrega (no obligatoria — el admin
+     * decide después cuáles son obligatorias). Si el mismo niño ya tiene esa
+     * prestación del mismo efector en ese período, se actualiza en vez de duplicar
+     * (reimportar un archivo corregido pisa los datos).
+     */
+    private function createChildServiceFromRow(Child $child, array $raw, ImportRow $row, string $userId): void
+    {
+        $institution = Institution::where('id', $raw['institution_id'] ?? null)->where('is_active', true)->first();
+        if (! $institution) {
+            abort(422, 'El efector de esta fila ya no existe o fue desactivado. Revisar la institución y volver a subir el archivo.');
+        }
+
+        $serviceName = trim((string) ($raw['service_name'] ?? ''));
+        $type = (! empty($raw['service_type_id']) ? ServiceType::find($raw['service_type_id']) : null)
+            ?? ServiceType::findByName($serviceName)
+            ?? ServiceType::create([
+                'name'         => $serviceName,
+                'sector'       => $raw['sector_key'],
+                'is_mandatory' => false,
+                'is_active'    => true,
+                'created_by'   => $userId,
+            ]);
+
+        $key = [
+            'child_id'        => $child->id,
+            'service_type_id' => $type->id,
+            'institution_id'  => $institution->id,
+            'year'            => (int) $raw['period_year'],
+            'period_type'     => $raw['period_type'],
+            'period_number'   => (int) $raw['period_number'],
+        ];
+
+        $values = [
+            'sector'         => $raw['sector_key'],
+            'service_number' => isset($raw['service_number']) ? (int) $raw['service_number'] : null,
+            'observations'   => $this->serviceObservations($raw['observations'] ?? null),
+            'has_alert'      => (bool) ($raw['alert'] ?? false),
+            'import_row_id'  => $row->id,
+        ];
+
+        $existing = ChildService::where($key)->first();
+
+        if ($existing) {
+            $existing->update([...$values, 'updated_by' => $userId]);
+            return;
+        }
+
+        ChildService::create([...$key, ...$values, 'created_by' => $userId]);
+    }
+
+    /**
+     * Asocia al niño con el efector de la prestación según el sector del efector
+     * (institutions.type), para que esa institución lo vea en el sistema:
+     *
+     *   - salud     → registro de salud en el efector
+     *   - educacion → registro educativo en el efector
+     *   - otros sectores (protección social, recreación...) no tienen registro
+     *     propio: queda solo la prestación.
+     *
+     * Regla (decisión del usuario): un niño tiene UN registro por sector. Si ya
+     * tiene uno en otra institución de ese sector, NO se toca — la prestación
+     * igual queda guardada con su efector.
+     */
+    private function linkChildToProvider(Child $child, array $raw): void
+    {
+        $institution = Institution::find($raw['institution_id'] ?? null);
+        if (! $institution) {
+            return;
+        }
+
+        match ($institution->type) {
+            'salud' => $child->healthRecord()->exists()
+                ? null
+                : $this->createHealthRecordIfAbsent($child, [], $institution->id),
+            'educacion' => $child->educationRecord()->exists()
+                ? null
+                : $this->createEducationRecordIfAbsent($child, [], $institution->id),
+            default => null,
+        };
+    }
+
+    /** "s/d" (sin dato) y similares no son una observación real. */
+    private function serviceObservations(?string $value): ?string
+    {
+        $value = $value !== null ? trim($value) : null;
+
+        if ($value === null || $value === '' || in_array(mb_strtolower($value), ['s/d', 'sd', 's/d.', '-', 'sin dato', 'sin datos'], true)) {
+            return null;
+        }
+
+        return $value;
     }
 
     /** Mismo criterio que createEducationRecordIfAbsent() — ver ese docblock. */

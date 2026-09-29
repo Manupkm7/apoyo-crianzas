@@ -4,6 +4,7 @@ namespace App\Providers;
 
 use App\Models\BirthRecord;
 use App\Models\Child;
+use App\Models\ChildService;
 use App\Models\DeathRecord;
 use App\Models\EducationRecord;
 use App\Models\HealthRecord;
@@ -11,6 +12,7 @@ use App\Models\Institution;
 use App\Models\User;
 use App\Policies\BirthRecordPolicy;
 use App\Policies\ChildPolicy;
+use App\Policies\ChildServicePolicy;
 use App\Policies\DeathRecordPolicy;
 use App\Policies\EducationRecordPolicy;
 use App\Policies\HealthRecordPolicy;
@@ -97,5 +99,9 @@ class AppServiceProvider extends ServiceProvider
         // solo admin los crea/edita/elimina manualmente (ver policies para el detalle)
         Gate::policy(BirthRecord::class, BirthRecordPolicy::class);
         Gate::policy(DeathRecord::class, DeathRecordPolicy::class);
+
+        // Prestaciones por período — admin todo; la institución efector carga y
+        // corrige solo las suyas (ver ChildServicePolicy)
+        Gate::policy(ChildService::class, ChildServicePolicy::class);
     }
 }

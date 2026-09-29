@@ -3,6 +3,8 @@
 namespace App\Http\Resources;
 
 use App\Services\ChildAlertEvaluator;
+use App\Support\Sector;
+use App\Support\ServicePeriod;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -48,6 +50,11 @@ class ChildResource extends JsonResource
         }
         if ($this->relationLoaded('healthRecord') && $this->healthRecord) {
             $sectors[] = 'salud';
+        }
+        // Alertas de prestaciones: solo admin/coordinador (mezclan todos los
+        // sectores y efectores — ver ChildAlertEvaluator).
+        if ($user->canBypassRls() && $this->relationLoaded('services')) {
+            $sectors[] = ChildAlertEvaluator::SECTOR_PRESTACIONES;
         }
 
         $alerts     = (new ChildAlertEvaluator($this->resource))->evaluate($sectors);
@@ -100,6 +107,11 @@ class ChildResource extends JsonResource
                     : null;
             }),
 
+            // Resumen de prestaciones para las tablas de niños (el detalle completo
+            // se pide aparte a /children/{id}/services). Admin/coordinador: todas;
+            // institución: solo las que ella efectuó (ver ChildController::index).
+            'services_summary' => $this->whenLoaded('services', fn () => $this->servicesSummary()),
+
             // Alertas del SAT calculadas a partir de los registros que el usuario
             // puede ver (foto vigente + último bimestre informado), cada una con
             // su estado de gestión ('pending' | 'managed'). Ver ChildAlertEvaluator.
@@ -116,6 +128,52 @@ class ChildResource extends JsonResource
 
             'created_at' => $this->created_at?->toISOString(),
             'updated_at' => $this->updated_at?->toISOString(),
+        ];
+    }
+
+    /**
+     * Totales, último período informado (con sus prestaciones), sectores y
+     * efectores de las prestaciones cargadas del niño.
+     */
+    private function servicesSummary(): array
+    {
+        $services = $this->services;
+
+        $latest = $services->sortByDesc(fn ($s) => $s->period_start?->toDateString())->first();
+        $latestServices = $latest
+            ? $services->filter(fn ($s) => $s->year === $latest->year
+                && $s->period_type === $latest->period_type
+                && $s->period_number === $latest->period_number)
+            : collect();
+
+        return [
+            'total'        => $services->count(),
+            'alerts_count' => $services->where('has_alert', true)->count(),
+
+            'latest_period_code'  => $latest ? ServicePeriod::code($latest->period_type, $latest->period_number, $latest->year) : null,
+            'latest_period_label' => $latest ? ServicePeriod::label($latest->period_type, $latest->period_number, $latest->year) : null,
+            // Una entrada por prestación, SIN agrupar por nombre: la misma prestación
+            // de dos efectores distintos son dos registros distintos.
+            'latest_period_services' => $latestServices
+                ->sortBy(fn ($s) => [$s->serviceType?->name, $s->institution?->name])
+                ->values()
+                ->map(fn ($s) => [
+                    'id'            => $s->id,
+                    'name'          => $s->serviceType?->name,
+                    'provider_name' => $s->institution?->name,
+                    'has_alert'     => (bool) $s->has_alert,
+                ])
+                ->all(),
+
+            'sectors' => $services->pluck('sector')->filter()->unique()->sort()->values()
+                ->map(fn ($key) => ['key' => $key, 'label' => Sector::label($key)])
+                ->all(),
+
+            'providers' => $services
+                ->map(fn ($s) => $s->institution)
+                ->filter()->unique('id')->sortBy('name')->values()
+                ->map(fn ($i) => ['id' => $i->id, 'name' => $i->name, 'type' => $i->type])
+                ->all(),
         ];
     }
 }

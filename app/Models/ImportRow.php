@@ -87,4 +87,10 @@ class ImportRow extends Model
     {
         return $this->batch->source === 'health';
     }
+
+    /** Hoja de prestaciones (cada fila trae su efector). */
+    public function isFromServices(): bool
+    {
+        return $this->batch->source === 'services';
+    }
 }

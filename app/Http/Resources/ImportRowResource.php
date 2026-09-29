@@ -3,6 +3,8 @@
 namespace App\Http\Resources;
 
 use App\Http\Resources\ChildResource;
+use App\Support\ServicePeriod;
+use App\Support\Sector;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\JsonResource;
 
@@ -28,6 +30,7 @@ class ImportRowResource extends JsonResource
             'source_label'     => $this->whenLoaded('batch', fn () => match ($this->batch->source) {
                 'civil_registry' => 'Registro Civil',
                 'health'         => 'Salud',
+                'services'       => 'Prestaciones',
                 default          => 'Educación',
             }),
 
@@ -59,6 +62,16 @@ class ImportRowResource extends JsonResource
             'vaccines_current'        => $raw['vaccines_current'] ?? null,
             'last_checkup_date'       => $raw['last_checkup_date'] ?? null,
             'observations'            => $raw['observations'] ?? null,
+
+            // Prestación de la misma fila (si la trae) — valores ya resueltos por ServiceRowNormalizer
+            'period_label'     => isset($raw['period_type'], $raw['period_number'], $raw['period_year'])
+                ? ServicePeriod::label($raw['period_type'], (int) $raw['period_number'], (int) $raw['period_year'])
+                : ($raw['period'] ?? null),
+            'service_number'   => $raw['service_number'] ?? null,
+            'service_name'     => $raw['service_name'] ?? null,
+            'sector_label'     => Sector::label($raw['sector_key'] ?? null) ?? ($raw['sector'] ?? null),
+            'provider_name'    => $raw['institution_name'] ?? ($raw['provider'] ?? null),
+            'alert'            => array_key_exists('alert', $raw) ? (bool) $raw['alert'] : null,
 
             // Todas las columnas tal como venían en el archivo original (cabecera => valor),
             // sin filtrar por si las reconocemos o no. Respaldo para cuando el archivo trae

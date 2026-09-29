@@ -2,6 +2,8 @@
 
 namespace App\Http\Requests;
 
+use App\Support\AdministrativeDependency;
+use App\Support\Sector;
 use Illuminate\Foundation\Http\FormRequest;
 use Illuminate\Validation\Rule;
 
@@ -41,10 +43,11 @@ class StoreInstitutionRequest extends FormRequest
                 Rule::unique('institutions', 'name')->whereNull('deleted_at'),
             ],
 
-            // Tipo de institución — debe ser uno de los valores predefinidos
+            // Sector (= tipo de institución) — ver App\Support\Sector. 'justicia'
+            // ya no se ofrece para instituciones nuevas.
             'type' => [
                 'required',
-                Rule::in(['salud', 'educacion', 'desarrollo_social', 'justicia', 'otro']),
+                Rule::in(Sector::keys()),
             ],
 
             // Localidad — obligatoria para instituciones nuevas (catálogo geográfico
@@ -67,6 +70,29 @@ class StoreInstitutionRequest extends FormRequest
             'primario_years'    => ['nullable', 'integer', Rule::in([6, 7]), 'required_if:offers_primario,true'],
             'offers_secundario' => ['boolean'],
             'secundario_years'  => ['nullable', 'integer', Rule::in([6, 7]), 'required_if:offers_secundario,true'],
+
+            ...self::providerProfileRules(),
+        ];
+    }
+
+    /**
+     * Ficha del efector — compartida con UpdateInstitutionRequest (solo admin).
+     * articulation_ids = lista COMPLETA de efectores con los que articula (se
+     * sincroniza: los que no vengan se quitan).
+     */
+    public static function providerProfileRules(): array
+    {
+        return [
+            'administrative_dependency' => ['sometimes', 'nullable', Rule::in(AdministrativeDependency::keys())],
+            'program_area_id'           => ['sometimes', 'nullable', 'uuid', 'exists:program_areas,id'],
+            'beneficiaries'             => ['sometimes', 'nullable', 'string', 'max:3000'],
+            'observations'              => ['sometimes', 'nullable', 'string', 'max:10000'],
+            'articulation_ids'          => ['sometimes', 'array', 'max:500'],
+            'articulation_ids.*'        => [
+                'uuid',
+                'distinct',
+                Rule::exists('institutions', 'id')->whereNull('deleted_at'),
+            ],
         ];
     }
 
@@ -81,7 +107,10 @@ class StoreInstitutionRequest extends FormRequest
             'type.required'  => 'El tipo de institución es obligatorio.',
             'locality_id.required' => 'La localidad de la institución es obligatoria.',
             'locality_id.exists'   => 'La localidad seleccionada no existe.',
-            'type.in'        => 'El tipo debe ser: salud, educacion, desarrollo_social, justicia u otro.',
+            'type.in'        => 'El sector no es válido.',
+            'administrative_dependency.in' => 'La dependencia administrativa debe ser Estatal, Privado, Comunitario u Otros.',
+            'program_area_id.exists'       => 'La dependencia programática elegida no existe.',
+            'articulation_ids.*.exists'    => 'Una de las instituciones articuladas no existe o fue dada de baja.',
             'primario_years.required_if'   => 'Indicá la cantidad de años de primario (6 o 7).',
             'secundario_years.required_if' => 'Indicá la cantidad de años de secundario (6 o 7).',
         ];

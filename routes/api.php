@@ -19,7 +19,10 @@ use App\Http\Controllers\Api\InstitutionAuthController;
 use App\Http\Controllers\Api\InstitutionController;
 use App\Http\Controllers\Api\InstitutionDirectoryController;
 use App\Http\Controllers\Api\PermissionController;
+use App\Http\Controllers\Api\ProgramAreaController;
 use App\Http\Controllers\Api\RoleController;
+use App\Http\Controllers\Api\ChildServiceController;
+use App\Http\Controllers\Api\ServiceTypeController;
 use App\Http\Controllers\Api\UserController;
 use App\Http\Controllers\Api\UserImportController;
 use Illuminate\Support\Facades\Route;
@@ -91,6 +94,12 @@ Route::prefix('v1')->group(function () {
         Route::apiResource('institutions', InstitutionController::class);
         Route::post('institutions/{institution}/reset-password', [InstitutionController::class, 'resetPassword']);
 
+        // Catálogo de dependencias programáticas (ficha del efector)
+        // - GET  /api/v1/program-areas  → listar
+        // - POST /api/v1/program-areas  → agregar nueva [solo admin]
+        Route::get('program-areas', [ProgramAreaController::class, 'index']);
+        Route::post('program-areas', [ProgramAreaController::class, 'store']);
+
         // -----------------------------------------------------------------------
         // ABM de Usuarios
         // - GET    /api/v1/users                   → listar usuarios
@@ -158,7 +167,22 @@ Route::prefix('v1')->group(function () {
         Route::get('database-export', [DatabaseExportController::class, 'download']);
 
         // -----------------------------------------------------------------------
-        // Importaciones masivas (Registro Civil, Educación y Salud)
+        // Catálogo de prestaciones (Control de niño sano, AUH, Educación inicial...)
+        // - GET   /api/v1/service-types                → listar (+ catálogo de sectores)
+        // - POST  /api/v1/service-types                → alta [solo admin]
+        // - PATCH /api/v1/service-types/{serviceType}  → editar / obligatoria / desactivar [solo admin]
+        // -----------------------------------------------------------------------
+        Route::get('service-types', [ServiceTypeController::class, 'index']);
+        Route::post('service-types', [ServiceTypeController::class, 'store']);
+        Route::patch('service-types/{serviceType}', [ServiceTypeController::class, 'update']);
+
+        // Grilla de prestaciones de todos los niños visibles (una fila por prestación)
+        // - GET /api/v1/child-services  → ?period=TRIM12026&search=&alert=1 (+ 'periods' disponibles)
+        Route::get('child-services', [ChildServiceController::class, 'all']);
+
+        // -----------------------------------------------------------------------
+        // Importaciones masivas (Registro Civil, Educación y Salud — cualquiera de
+        // las tres puede traer además columnas de prestaciones por período)
         // - GET    /api/v1/imports                                 → listar batches
         // - POST   /api/v1/imports/preview                        → subir archivo y listar sus hojas [solo admin]
         // - POST   /api/v1/imports                                 → crear un batch por hoja asignada [solo admin]
@@ -184,8 +208,7 @@ Route::prefix('v1')->group(function () {
             Route::patch('/{batch}/rows/{row}/resolve',    [ImportController::class, 'resolveRow']);
             Route::post('/{batch}/rows/{row}/reopen',      [ImportController::class, 'reopenRow']);
             Route::post('/{batch}/rows/bulk-resolve',      [ImportController::class, 'bulkResolveNoMatch']);
-            Route::post('/{batch}/rematch',                [ImportController::class, 'rematchBatch']);
-        });
+            Route::post('/{batch}/rematch',                [ImportController::class, 'rematchBatch']);        });
 
         // -----------------------------------------------------------------------
         // Carga masiva de usuarios institucionales (rol institución o representante)
@@ -261,6 +284,19 @@ Route::prefix('v1')->group(function () {
             // Acceso: institución dueña del registro del sector, o admin.
             // -----------------------------------------------------------------------
             Route::post('alerts/{type}/acknowledge', [ChildAlertController::class, 'acknowledge']);
+
+            // -----------------------------------------------------------------------
+            // Prestaciones por período (trimestre/bimestre) de un niño, de cualquier
+            // efector — también llegan por carga masiva (source 'services').
+            // - GET    /api/v1/children/{child}/services              → listar (?year=&period_type=&period_number=)
+            // - POST   /api/v1/children/{child}/services              → cargar [admin o institución efector]
+            // - PATCH  /api/v1/children/{child}/services/{service}    → corregir [admin o institución efector]
+            // - DELETE /api/v1/children/{child}/services/{service}    → dar de baja [solo admin]
+            // -----------------------------------------------------------------------
+            Route::get('services', [ChildServiceController::class, 'index']);
+            Route::post('services', [ChildServiceController::class, 'store']);
+            Route::patch('services/{service}', [ChildServiceController::class, 'update']);
+            Route::delete('services/{service}', [ChildServiceController::class, 'destroy']);
 
             // -----------------------------------------------------------------------
             // Registro de nacimiento de un niño (uno por niño, mayormente vía importación)

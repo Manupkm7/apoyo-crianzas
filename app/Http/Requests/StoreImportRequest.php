@@ -29,7 +29,10 @@ class StoreImportRequest extends FormRequest
 
             'sheets'             => ['required', 'array', 'min:1'],
             'sheets.*.sheet_name'     => ['nullable', 'string', 'max:120'],
-            'sheets.*.source'         => ['required', 'in:civil_registry,education,health'],
+            // 'services' = hoja de prestaciones: no lleva institución porque cada fila
+            // trae su efector (una prestación por fila, de instituciones distintas).
+            // Pasa por el mismo flujo de matcheo de niños (ver ServiceRowNormalizer).
+            'sheets.*.source'         => ['required', 'in:civil_registry,education,health,services'],
             'sheets.*.institution_id' => ['nullable', 'uuid', 'exists:institutions,id'],
         ];
     }
@@ -40,7 +43,7 @@ class StoreImportRequest extends FormRequest
             'storage_path.required'      => 'Falta el archivo (subilo de nuevo).',
             'sheets.required'            => 'Debe indicar al menos una hoja a procesar.',
             'sheets.*.source.required'   => 'Debe indicar la fuente de cada hoja.',
-            'sheets.*.source.in'         => 'La fuente debe ser "civil_registry", "education" o "health".',
+            'sheets.*.source.in'         => 'La fuente debe ser "civil_registry", "education", "health" o "services".',
             'sheets.*.institution_id.exists' => 'La institución seleccionada no existe en el sistema.',
         ];
     }

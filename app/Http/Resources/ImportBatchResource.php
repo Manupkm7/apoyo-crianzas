@@ -28,6 +28,7 @@ class ImportBatchResource extends JsonResource
             'source_label'      => match ($this->source) {
                 'civil_registry' => 'Registro Civil',
                 'health'         => 'Salud',
+                'services'       => 'Prestaciones',
                 default          => 'Educación',
             },
             'status'            => $this->status,

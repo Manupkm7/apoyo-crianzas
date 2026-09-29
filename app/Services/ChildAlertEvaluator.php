@@ -5,7 +5,12 @@ namespace App\Services;
 use App\Contracts\SystemActor;
 use App\Models\AlertAcknowledgement;
 use App\Models\Child;
+use App\Models\ChildService;
+use App\Models\ServiceType;
+use App\Support\ServicePeriod;
 use Illuminate\Database\Eloquent\Builder;
+use Illuminate\Support\Collection;
+use Illuminate\Support\Str;
 
 /**
  * Sistema de Alerta Temprana (SAT) — cálculo de alertas de un niño.
@@ -13,10 +18,24 @@ use Illuminate\Database\Eloquent\Builder;
  * Las alertas NO se guardan: se calculan al vuelo a partir de
  *   1) la foto vigente   → education_records / health_records
  *   2) el último bimestre → EducationRecord/HealthRecord::latestPeriodReport
+ *   3) las prestaciones por período → child_services (sector 'prestaciones')
  *
- * Una alerta salta si CUALQUIERA de las dos fuentes marca el problema. Ej.: el
- * efector dice "vacunas al día" pero el último reporte bimestral dice
- * "atrasadas" → hay alerta.
+ * Una alerta de educación/salud salta si CUALQUIERA de las dos primeras fuentes
+ * marca el problema. Ej.: el efector dice "vacunas al día" pero el último
+ * reporte bimestral dice "atrasadas" → hay alerta.
+ *
+ * Alertas de prestaciones (solo visibles para admin/coordinador — las
+ * prestaciones mezclan todos los sectores y pueden traer datos sensibles):
+ *   - alerta_prestacion: algún efector marcó "Alerta = SI" en una prestación
+ *     (archivo o carga manual). Queda pendiente hasta que alguien la gestiona
+ *     DESPUÉS de que se marcó (alert_flagged_at); una prestación nueva con
+ *     alerta la vuelve a poner en pendiente aunque haya una gestión vigente.
+ *     Una vez revisada no reaparece sola al vencer la gestión.
+ *   - prestacion_obligatoria_faltante: en el ÚLTIMO período informado del niño
+ *     falta alguna prestación marcada como obligatoria en el catálogo
+ *     (service_types.is_mandatory). Sigue el ciclo normal de gestión (se
+ *     silencia y vuelve si el faltante persiste). Un niño sin ninguna
+ *     prestación cargada no alerta: sin dato no hay alarma.
  *
  * "Gestionar" una alerta (App\Models\AlertAcknowledgement) la silencia por
  * config('alerts.acknowledgement_ttl_days') días: durante ese plazo queda como
@@ -25,17 +44,24 @@ use Illuminate\Database\Eloquent\Builder;
  */
 class ChildAlertEvaluator
 {
-    public const TYPE_NO_ESCOLARIZADO   = 'no_escolarizado';
-    public const TYPE_INASISTENCIAS     = 'inasistencias_elevadas';
-    public const TYPE_CONTROL_ATRASADO  = 'control_atrasado';
-    public const TYPE_VACUNAS_ATRASADAS = 'vacunas_atrasadas';
+    public const TYPE_NO_ESCOLARIZADO       = 'no_escolarizado';
+    public const TYPE_INASISTENCIAS         = 'inasistencias_elevadas';
+    public const TYPE_CONTROL_ATRASADO      = 'control_atrasado';
+    public const TYPE_VACUNAS_ATRASADAS     = 'vacunas_atrasadas';
+    public const TYPE_ALERTA_PRESTACION     = 'alerta_prestacion';
+    public const TYPE_PRESTACION_FALTANTE   = 'prestacion_obligatoria_faltante';
+
+    /** Sector "virtual" de las alertas que salen de child_services. */
+    public const SECTOR_PRESTACIONES = 'prestaciones';
 
     /** tipo => [sector, etiqueta legible] */
     public const TYPES = [
-        self::TYPE_NO_ESCOLARIZADO   => ['educacion', 'No escolarizado'],
-        self::TYPE_INASISTENCIAS     => ['educacion', 'Inasistencias elevadas'],
-        self::TYPE_CONTROL_ATRASADO  => ['salud', 'Control de niño sano atrasado'],
-        self::TYPE_VACUNAS_ATRASADAS => ['salud', 'Vacunas atrasadas'],
+        self::TYPE_NO_ESCOLARIZADO     => ['educacion', 'No escolarizado'],
+        self::TYPE_INASISTENCIAS       => ['educacion', 'Inasistencias elevadas'],
+        self::TYPE_CONTROL_ATRASADO    => ['salud', 'Control de niño sano atrasado'],
+        self::TYPE_VACUNAS_ATRASADAS   => ['salud', 'Vacunas atrasadas'],
+        self::TYPE_ALERTA_PRESTACION   => [self::SECTOR_PRESTACIONES, 'Alerta informada por un efector'],
+        self::TYPE_PRESTACION_FALTANTE => [self::SECTOR_PRESTACIONES, 'Falta una prestación obligatoria'],
     ];
 
     public function __construct(private Child $child)
@@ -83,6 +109,14 @@ class ChildAlertEvaluator
                 continue;
             }
 
+            if ($sector === self::SECTOR_PRESTACIONES) {
+                $alert = $this->evaluateServiceAlert($type, $label);
+                if ($alert !== null) {
+                    $alerts[] = $alert;
+                }
+                continue;
+            }
+
             $cond = $this->conditionSources($type);
             if ($cond['sources'] === []) {
                 continue;
@@ -97,6 +131,7 @@ class ChildAlertEvaluator
                 'label'      => $label,
                 'sources'    => $cond['sources'],
                 'period'     => $cond['period'],
+                'details'    => [],
                 'status'     => $active ? 'managed' : 'pending',
                 'management' => $active ? $this->formatAck($active) : null,
                 'history'    => $acks
@@ -106,6 +141,169 @@ class ChildAlertEvaluator
         }
 
         return $alerts;
+    }
+
+    // ── alertas de prestaciones (requiere services.serviceType + services.institution) ──
+
+    /**
+     * Arma la alerta de prestaciones de este tipo, o null si no corresponde.
+     * 'details' lista, en texto legible, qué la dispara (prestaciones con alerta
+     * o prestaciones obligatorias que faltan).
+     */
+    private function evaluateServiceAlert(string $type, string $label): ?array
+    {
+        $acks   = $this->acksForType($type);
+        $active = $acks->first(fn (AlertAcknowledgement $a) => $a->isActive());
+
+        $result = $type === self::TYPE_ALERTA_PRESTACION
+            ? $this->flaggedServicesState($acks, $active)
+            : $this->missingMandatoryState($active);
+
+        if ($result === null) {
+            return null;
+        }
+
+        return [
+            'type'       => $type,
+            'sector'     => self::SECTOR_PRESTACIONES,
+            'label'      => $label,
+            'sources'    => ['services'],
+            'period'     => $result['period'],
+            'details'    => $result['details'],
+            'status'     => $result['status'],
+            'management' => $active ? $this->formatAck($active) : null,
+            'history'    => $acks
+                ->map(fn (AlertAcknowledgement $a) => $this->formatAck($a) + ['active' => $a->isActive()])
+                ->all(),
+        ];
+    }
+
+    /**
+     * Prestaciones con alerta. Pendiente si hay alguna marcada después de la
+     * última gestión (o nunca gestionada); en seguimiento si todas ya fueron
+     * revisadas y la gestión sigue vigente; si no, no se muestra.
+     *
+     * @return array{status: string, period: ?string, details: list<string>}|null
+     */
+    private function flaggedServicesState(Collection $acks, ?AlertAcknowledgement $active): ?array
+    {
+        $flagged = $this->child->services
+            ->filter(fn (ChildService $s) => $s->has_alert)
+            ->sortByDesc(fn (ChildService $s) => $s->alert_flagged_at?->getTimestamp() ?? PHP_INT_MAX)
+            ->values();
+
+        if ($flagged->isEmpty()) {
+            return null;
+        }
+
+        $lastAckAt  = $acks->first()?->acknowledged_at;
+        $unreviewed = $flagged->filter(
+            fn (ChildService $s) => $lastAckAt === null
+                || $s->alert_flagged_at === null
+                || $s->alert_flagged_at->greaterThan($lastAckAt)
+        )->values();
+
+        if ($unreviewed->isNotEmpty()) {
+            $shown  = $unreviewed;
+            $status = 'pending';
+        } elseif ($active) {
+            $shown  = $flagged->filter(
+                fn (ChildService $s) => $s->alert_flagged_at === null || $s->alert_flagged_at->lessThanOrEqualTo($active->acknowledged_at)
+            )->values();
+            $status = 'managed';
+        } else {
+            return null;
+        }
+
+        $first = $shown->first();
+
+        return [
+            'status'  => $status,
+            'period'  => $first ? ServicePeriod::label($first->period_type, $first->period_number, $first->year) : null,
+            'details' => $shown->take(10)->map(fn (ChildService $s) => $this->describeService($s, withObservations: true))->all(),
+        ];
+    }
+
+    /**
+     * Prestaciones obligatorias ausentes en el último período informado.
+     *
+     * @return array{status: string, period: ?string, details: list<string>}|null
+     */
+    private function missingMandatoryState(?AlertAcknowledgement $active): ?array
+    {
+        $services = $this->child->services;
+
+        if ($services->isEmpty()) {
+            return null;
+        }
+
+        $missing = self::missingMandatoryTypes($services);
+
+        if ($missing->isEmpty()) {
+            return null;
+        }
+
+        $latest = self::latestPeriodServices($services)->first();
+
+        return [
+            'status'  => $active ? 'managed' : 'pending',
+            'period'  => ServicePeriod::label($latest->period_type, $latest->period_number, $latest->year),
+            'details' => $missing->map(fn (ServiceType $t) => $t->name)->values()->all(),
+        ];
+    }
+
+    /**
+     * Prestaciones del último período informado (el de period_start más
+     * reciente; si un trimestre y un bimestre arrancan el mismo día, cuentan
+     * los dos).
+     *
+     * @param  Collection<int, ChildService>  $services
+     * @return Collection<int, ChildService>
+     */
+    private static function latestPeriodServices(Collection $services): Collection
+    {
+        $latestStart = $services->max(fn (ChildService $s) => $s->period_start->getTimestamp());
+
+        return $services
+            ->filter(fn (ChildService $s) => $s->period_start->getTimestamp() === $latestStart)
+            ->values();
+    }
+
+    /**
+     * @param  Collection<int, ChildService>  $services
+     * @return Collection<int, ServiceType>
+     */
+    private static function missingMandatoryTypes(Collection $services): Collection
+    {
+        $present = self::latestPeriodServices($services)->pluck('service_type_id')->unique();
+
+        return self::mandatoryTypes()
+            ->reject(fn (ServiceType $t) => $present->contains($t->id))
+            ->values();
+    }
+
+    /**
+     * Catálogo de prestaciones obligatorias activas — una sola consulta por
+     * request aunque se evalúen muchos niños (listado).
+     *
+     * @return Collection<int, ServiceType>
+     */
+    private static function mandatoryTypes(): Collection
+    {
+        return once(fn () => ServiceType::mandatory()->orderBy('name')->get());
+    }
+
+    private function describeService(ChildService $s, bool $withObservations = false): string
+    {
+        $text = ($s->serviceType?->name ?? 'Prestación')
+            . ($s->institution ? " ({$s->institution->name})" : '')
+            . ' · ' . ServicePeriod::label($s->period_type, $s->period_number, $s->year);
+
+        if ($withObservations && $s->observations) {
+            $text .= ' — ' . Str::limit($s->observations, 200);
+        }
+
+        return $text;
     }
 
     /**
@@ -202,6 +400,18 @@ class ChildAlertEvaluator
             return false;
         }
 
+        if ($sector === self::SECTOR_PRESTACIONES) {
+            // Para gestionar alcanza con que haya alguna prestación con alerta (aunque
+            // ya esté en seguimiento: se puede actualizar la nota, igual que el resto).
+            if ($type === self::TYPE_ALERTA_PRESTACION) {
+                return $child->services()->where('has_alert', true)->exists();
+            }
+
+            return Child::whereKey($child->id)
+                ->where(fn (Builder $q) => self::applyServiceCondition($q, $type))
+                ->exists();
+        }
+
         $relation = $sector === 'educacion' ? 'educationRecord' : 'healthRecord';
 
         return $child->{$relation}()
@@ -241,6 +451,16 @@ class ChildAlertEvaluator
      */
     public static function contextSnapshot(Child $child, string $type): array
     {
+        if (self::sectorForType($type) === self::SECTOR_PRESTACIONES) {
+            $child->loadMissing(['services.serviceType', 'services.institution', 'alertAcknowledgements']);
+            $alert = (new self($child))->evaluateServiceAlert($type, (string) self::labelForType($type));
+
+            return array_filter(
+                ['sources' => ['services'], 'period' => $alert['period'] ?? null, 'details' => $alert['details'] ?? []],
+                fn ($v) => $v !== null && $v !== [],
+            );
+        }
+
         $cond = (new self($child))->conditionSources($type);
 
         return array_filter(
@@ -261,6 +481,24 @@ class ChildAlertEvaluator
     {
         $query->where(function (Builder $outer) use ($user) {
             foreach (self::TYPES as $type => [$sector]) {
+                // Prestaciones: solo admin/coordinador (ver docblock de la clase).
+                if ($sector === self::SECTOR_PRESTACIONES) {
+                    if ($user->canBypassRls()) {
+                        $outer->orWhere(function (Builder $c) use ($type) {
+                            self::applyServiceCondition($c, $type);
+
+                            // alerta_prestacion ya excluye en su propia condición lo
+                            // revisado; el faltante sigue el ciclo normal de gestión.
+                            if ($type === self::TYPE_PRESTACION_FALTANTE) {
+                                $c->whereDoesntHave('alertAcknowledgements', function (Builder $aq) use ($type) {
+                                    $aq->where('alert_type', $type)->where('expires_at', '>', now());
+                                });
+                            }
+                        });
+                    }
+                    continue;
+                }
+
                 if (! ($user->canBypassRls() || $user->institutionType() === $sector)) {
                     continue;
                 }
@@ -279,6 +517,61 @@ class ChildAlertEvaluator
                 });
             }
         });
+    }
+
+    /**
+     * Sobre una query de Child: condición SQL de las alertas de prestaciones,
+     * equivalente a flaggedServicesState()/missingMandatoryState().
+     *
+     *   - alerta_prestacion: existe una prestación con alerta que no tenga ninguna
+     *     gestión posterior a cuando se marcó.
+     *   - prestacion_obligatoria_faltante: el niño tiene prestaciones cargadas y
+     *     en su último período informado falta alguna obligatoria activa.
+     */
+    public static function applyServiceCondition(Builder $childQuery, string $type): void
+    {
+        if ($type === self::TYPE_ALERTA_PRESTACION) {
+            $childQuery->whereExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('child_services as cs')
+                    ->whereColumn('cs.child_id', 'children.id')
+                    ->whereNull('cs.deleted_at')
+                    ->where('cs.has_alert', true)
+                    ->whereNotExists(function ($a) {
+                        $a->selectRaw('1')
+                            ->from('alert_acknowledgements as aa')
+                            ->whereColumn('aa.child_id', 'cs.child_id')
+                            ->where('aa.alert_type', self::TYPE_ALERTA_PRESTACION)
+                            ->whereColumn('aa.acknowledged_at', '>=', 'cs.alert_flagged_at');
+                    });
+            });
+
+            return;
+        }
+
+        $latestStart = '(SELECT MAX(cs2.period_start) FROM child_services cs2 WHERE cs2.child_id = children.id AND cs2.deleted_at IS NULL)';
+
+        $childQuery
+            ->whereExists(function ($q) {
+                $q->selectRaw('1')
+                    ->from('child_services as cs0')
+                    ->whereColumn('cs0.child_id', 'children.id')
+                    ->whereNull('cs0.deleted_at');
+            })
+            ->whereExists(function ($q) use ($latestStart) {
+                $q->selectRaw('1')
+                    ->from('service_types as st')
+                    ->where('st.is_mandatory', true)
+                    ->where('st.is_active', true)
+                    ->whereNotExists(function ($s) use ($latestStart) {
+                        $s->selectRaw('1')
+                            ->from('child_services as cs')
+                            ->whereColumn('cs.child_id', 'children.id')
+                            ->whereColumn('cs.service_type_id', 'st.id')
+                            ->whereNull('cs.deleted_at')
+                            ->whereRaw("cs.period_start = {$latestStart}");
+                    });
+            });
     }
 
     /**
