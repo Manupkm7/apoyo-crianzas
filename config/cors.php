@@ -39,6 +39,8 @@ return [
         'Origin',
         'X-CSRF-TOKEN',
         'X-Locality-Scope', // ámbito global del sidebar, ver App\Support\LocalityScope
+        'X-Services-From',  // fecha de prestaciones del sidebar, ver App\Support\ServiceDateRange
+        'X-Services-To',
     ],
 
     'exposed_headers' => [],

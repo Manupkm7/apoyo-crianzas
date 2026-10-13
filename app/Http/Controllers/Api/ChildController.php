@@ -10,6 +10,7 @@ use App\Models\Child;
 use App\Services\ChildAlertEvaluator;
 use App\Services\Import\ImportMatchingService;
 use App\Support\LocalityScope;
+use App\Support\ServiceDateRange;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -134,11 +135,19 @@ class ChildController extends Controller
 
         // Con/sin prestaciones cargadas. El usuario institucional solo cuenta las
         // prestaciones donde su institución es el efector (mismo criterio que el eager load).
-        if ($request->has('has_services')) {
-            $ownServices = fn ($q) => $user->canBypassRls()
-                ? $q
-                : $q->where('institution_id', $user->institution_id);
+        $ownServices = fn ($q) => $user->canBypassRls()
+            ? $q
+            : $q->where('institution_id', $user->institution_id);
 
+        // Fecha de prestaciones del sidebar: solo niños con alguna prestación cuyo
+        // período se superpone con el rango (ver ServiceDateRange). Mismo criterio
+        // de "propias" que has_services. El resumen y las alertas de cada niño
+        // siguen calculándose sobre todas sus prestaciones (foto vigente del SAT).
+        if ($dateRange = ServiceDateRange::fromRequest($request)) {
+            $query->whereHas('services', fn ($q) => ServiceDateRange::applyToServices($ownServices($q), $dateRange));
+        }
+
+        if ($request->has('has_services')) {
             $request->boolean('has_services')
                 ? $query->whereHas('services', $ownServices)
                 : $query->whereDoesntHave('services', $ownServices);

@@ -10,6 +10,7 @@ use App\Models\ChildService;
 use App\Models\Institution;
 use App\Models\ServiceType;
 use App\Support\LocalityScope;
+use App\Support\ServiceDateRange;
 use App\Support\ServicePeriod;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
@@ -65,6 +66,12 @@ class ChildServiceController extends Controller
         // niños de esa localidad — mismo criterio que ChildController::index.
         if ($localityKey = LocalityScope::fromRequest($request)) {
             $query->whereHas('child', fn ($q) => LocalityScope::applyToChildren($q, $localityKey));
+        }
+
+        // Fecha de prestaciones del sidebar: períodos que se superponen con el rango.
+        // Va antes de calcular 'periods' para que el select solo ofrezca los del rango.
+        if ($dateRange = ServiceDateRange::fromRequest($request)) {
+            ServiceDateRange::applyToServices($query, $dateRange);
         }
 
         // Períodos disponibles ANTES de filtrar por período/búsqueda (para el select).
