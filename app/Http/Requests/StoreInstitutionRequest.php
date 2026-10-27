@@ -87,6 +87,8 @@ class StoreInstitutionRequest extends FormRequest
             'program_area_id'           => ['sometimes', 'nullable', 'uuid', 'exists:program_areas,id'],
             'beneficiaries'             => ['sometimes', 'nullable', 'string', 'max:3000'],
             'observations'              => ['sometimes', 'nullable', 'string', 'max:10000'],
+            'service_type_ids'   => ['sometimes', 'array'],
+'service_type_ids.*' => ['uuid', 'distinct', 'exists:service_types,id'],
             'articulation_ids'          => ['sometimes', 'array', 'max:500'],
             'articulation_ids.*'        => [
                 'uuid',

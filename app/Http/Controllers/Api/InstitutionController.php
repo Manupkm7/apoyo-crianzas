@@ -7,11 +7,21 @@ use App\Http\Requests\StoreInstitutionRequest;
 use App\Http\Requests\UpdateInstitutionRequest;
 use App\Http\Resources\InstitutionResource;
 use App\Models\Institution;
+use App\Models\Child;
+use App\Services\ChildAlertEvaluator;
 use App\Support\LocalityScope;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Str;
+use Illuminate\Support\Facades\DB;
+use PhpOffice\PhpSpreadsheet\Spreadsheet;
+use PhpOffice\PhpSpreadsheet\Writer\Xlsx;
+use PhpOffice\PhpSpreadsheet\Cell\DataType;
+use Illuminate\Support\Facades\File;
+use Symfony\Component\HttpFoundation\BinaryFileResponse;
+use App\Support\Sector;
+use App\Support\AdministrativeDependency;
 
 /**
  * InstitutionController — ABM (Alta, Baja, Modificación) de instituciones.
@@ -41,7 +51,7 @@ class InstitutionController extends Controller
         $this->authorize('viewAny', Institution::class);
 
         $institutions = Institution::query()
-            ->with('locality.department.province')
+            ->with(['locality.department.province', 'programArea'])
             ->withCount([
                 // Cuenta solo los usuarios activos (no los desactivados ni eliminados)
                 'users' => fn ($q) => $q->where('is_active', true),
@@ -62,7 +72,46 @@ class InstitutionController extends Controller
             // ?per_page= para los desplegables que necesitan todas (ej. elegir el
             // efector de una prestación); el listado sigue paginando de a 20.
             ->paginate(max(1, min((int) $request->query('per_page', 20), 500)));
+        // Conteos de niños por efector, sin duplicar niños que tengan
+        // varias prestaciones registradas en la misma institución.
+        $institutionIds = $institutions->getCollection()->pluck('id')->all();
 
+        $childrenCounts = DB::table('child_services')
+            ->whereIn('institution_id', $institutionIds)
+            ->whereNull('deleted_at')
+            ->select('institution_id')
+            ->selectRaw('COUNT(DISTINCT child_id) AS total')
+            ->groupBy('institution_id')
+            ->pluck('total', 'institution_id');
+
+        // Utilizamos la definición de alertas pendientes de SATDES.
+        $pendingChildren = Child::query()->select('children.id');
+
+        ChildAlertEvaluator::applyPendingAlertScope(
+            $pendingChildren,
+            $request->user()
+        );
+
+        $alertCounts = DB::table('child_services')
+            ->whereIn('institution_id', $institutionIds)
+            ->whereNull('deleted_at')
+            ->whereIn('child_id', $pendingChildren)
+            ->select('institution_id')
+            ->selectRaw('COUNT(DISTINCT child_id) AS total')
+            ->groupBy('institution_id')
+            ->pluck('total', 'institution_id');
+
+        foreach ($institutions->getCollection() as $institution) {
+            $institution->setAttribute(
+                'children_count',
+                (int) ($childrenCounts[$institution->id] ?? 0)
+            );
+
+            $institution->setAttribute(
+                'children_with_alerts_count',
+                (int) ($alertCounts[$institution->id] ?? 0)
+            );
+        }
         return InstitutionResource::collection($institutions);
     }
 
@@ -77,7 +126,7 @@ class InstitutionController extends Controller
         $this->authorize('view', $institution);
 
         // Cargamos el conteo de usuarios y la cadena de jurisdicción para el detalle
-        $institution->load(['locality.department.province', 'programArea']);
+        $institution->load(['locality.department.province', 'programArea', 'serviceTypes']);
         $institution->loadCount([
             'users' => fn ($q) => $q->where('is_active', true),
         ]);
@@ -106,6 +155,8 @@ class InstitutionController extends Controller
         $data = $request->validated();
         $articulationIds = $data['articulation_ids'] ?? null;
         unset($data['articulation_ids']);
+        $serviceTypeIds = $data['service_type_ids'] ?? null;
+        unset($data['service_type_ids']);
 
         $institution = Institution::create([
             ...$data,
@@ -118,9 +169,12 @@ class InstitutionController extends Controller
         if ($articulationIds !== null) {
             $institution->syncArticulations($articulationIds, $request->user()->auditId());
         }
+               if ($serviceTypeIds !== null) {
+            $institution->serviceTypes()->sync($serviceTypeIds);
+        }
 
         // refresh(): 'code' (ID_EFECTOR) lo genera la base con su secuencia.
-        $institution->refresh()->load(['locality.department.province', 'programArea']);
+        $institution->refresh()->load(['locality.department.province', 'programArea', 'serviceTypes']);
 
         return (new InstitutionResource($institution))
             ->withArticulations()
@@ -178,6 +232,8 @@ class InstitutionController extends Controller
         $data = $request->validated();
         $articulationIds = $data['articulation_ids'] ?? null;
         unset($data['articulation_ids']);
+        $serviceTypeIds = $data['service_type_ids'] ?? null;
+        unset($data['service_type_ids']);
 
         $institution->update([
             ...$data,
@@ -190,8 +246,11 @@ class InstitutionController extends Controller
         if ($articulationIds !== null) {
             $institution->syncArticulations($articulationIds, $request->user()->auditId());
         }
+             if ($serviceTypeIds !== null) {
+            $institution->serviceTypes()->sync($serviceTypeIds);
+        }
 
-        $institution->load(['locality.department.province', 'programArea']);
+        $institution->load(['locality.department.province', 'programArea', 'serviceTypes']);
 
         return (new InstitutionResource($institution))->withArticulations();
     }
@@ -207,6 +266,187 @@ class InstitutionController extends Controller
      * ADVERTENCIA: Si la institución tiene usuarios activos, estos quedarán sin
      * institución asignada. Se recomienda desactivar primero a los usuarios.
      */
+        /**
+     * Exporta los efectores y sus datos a Excel.
+     */
+    public function export(Request $request): BinaryFileResponse
+    {
+        $this->authorize('viewAny', Institution::class);
+
+        $filters = $request->validate([
+            'search' => ['sometimes', 'nullable', 'string', 'max:255'],
+            'sector' => ['sometimes', 'nullable', 'string'],
+            'locality_id' => ['sometimes', 'nullable', 'uuid'],
+            'with_alerts' => ['sometimes', 'boolean'],
+        ]);
+
+        $query = Institution::query()
+            ->with([
+                'locality.department.province',
+                'programArea',
+                'serviceTypes',
+            ])
+            ->when(
+                ! $request->user()->canBypassRls(),
+                fn ($q) => $q->where(
+                    'id',
+                    $request->user()->institution_id
+                )
+            )
+            ->when(
+                LocalityScope::fromRequest($request),
+                fn ($q, string $localityKey) =>
+                    LocalityScope::applyToInstitutions($q, $localityKey)
+            );
+
+        if (! empty($filters['locality_id'])) {
+            $query->where('locality_id', $filters['locality_id']);
+        }
+
+        if (! empty($filters['sector'])) {
+            $query->where('type', $filters['sector']);
+        }
+
+        if (! empty($filters['search'])) {
+            $search = trim($filters['search']);
+
+            $query->where(function ($q) use ($search) {
+                $q->where('name', 'ilike', '%' . $search . '%');
+
+                if (ctype_digit($search)) {
+                    $q->orWhere('code', (int) $search);
+                }
+            });
+        }
+
+        $institutions = $query->orderBy('name')->get();
+
+        $ids = $institutions->pluck('id')->all();
+
+        $childrenCounts = DB::table('child_services')
+            ->whereIn('institution_id', $ids)
+            ->whereNull('deleted_at')
+            ->select('institution_id')
+            ->selectRaw('COUNT(DISTINCT child_id) AS total')
+            ->groupBy('institution_id')
+            ->pluck('total', 'institution_id');
+
+        $pendingChildren = Child::query()->select('children.id');
+
+        ChildAlertEvaluator::applyPendingAlertScope(
+            $pendingChildren,
+            $request->user()
+        );
+
+        $alertCounts = DB::table('child_services')
+            ->whereIn('institution_id', $ids)
+            ->whereNull('deleted_at')
+            ->whereIn('child_id', $pendingChildren)
+            ->select('institution_id')
+            ->selectRaw('COUNT(DISTINCT child_id) AS total')
+            ->groupBy('institution_id')
+            ->pluck('total', 'institution_id');
+
+        if (! empty($filters['with_alerts'])) {
+            $institutions = $institutions
+                ->filter(
+                    fn ($inst) =>
+                        (int) ($alertCounts[$inst->id] ?? 0) > 0
+                )
+                ->values();
+        }
+
+        $spreadsheet = new Spreadsheet();
+        $sheet = $spreadsheet->getActiveSheet();
+        $sheet->setTitle('Efectores');
+
+        $headers = [
+            'ID_EFECTOR',
+            'Sector',
+            'Unidad geográfica',
+            'Dependencia administrativa',
+            'Dependencia programática',
+            'Nombre del efector',
+            'Cantidad de niños atendidos',
+            'Cantidad de niños con alertas',
+            'Destinatarios',
+            'Prestaciones',
+            'Articulaciones',
+            'Dirección',
+            'Contacto',
+            'Observaciones',
+            'Estado',
+        ];
+
+        $sheet->fromArray($headers, null, 'A1');
+        $sheet->getStyle('A1:O1')->getFont()->setBold(true);
+        $sheet->freezePane('A2');
+        $sheet->setAutoFilter('A1:O1');
+
+        $row = 2;
+
+        foreach ($institutions as $inst) {
+            $values = [
+                $inst->code,
+                Sector::label($inst->type),
+                $inst->locality?->name,
+                AdministrativeDependency::label(
+                    $inst->administrative_dependency
+                ),
+                $inst->programArea?->name,
+                $inst->name,
+                (int) ($childrenCounts[$inst->id] ?? 0),
+                (int) ($alertCounts[$inst->id] ?? 0),
+                $inst->beneficiaries,
+                $inst->serviceTypes->pluck('name')->implode(', '),
+                $inst->articulatedInstitutions()
+                    ->pluck('name')->implode(', '),
+                $inst->address,
+                $inst->phone,
+                $inst->observations,
+                $inst->is_active ? 'Activa' : 'Inactiva',
+            ];
+
+            foreach ($values as $index => $value) {
+                $column = $index + 1;
+                $isNumber = in_array($index, [0, 6, 7], true)
+                    && $value !== null;
+
+                $sheet->setCellValueExplicit(
+                    [$column, $row],
+                    $value === null ? '' : (string) $value,
+                    $isNumber
+                        ? DataType::TYPE_NUMERIC
+                        : DataType::TYPE_STRING
+                );
+            }
+
+            $row++;
+        }
+
+        foreach (range('A', 'O') as $column) {
+            $sheet->getColumnDimension($column)->setWidth(24);
+        }
+
+        $sheet->getColumnDimension('F')->setWidth(40);
+        $sheet->getColumnDimension('I')->setWidth(45);
+        $sheet->getColumnDimension('J')->setWidth(45);
+        $sheet->getColumnDimension('K')->setWidth(45);
+        $sheet->getColumnDimension('N')->setWidth(45);
+
+        $directory = storage_path('app/private/exports');
+        File::ensureDirectoryExists($directory);
+
+        $filename = 'efectores_' . now()->format('Ymd_His') . '.xlsx';
+        $path = $directory . DIRECTORY_SEPARATOR . $filename;
+
+        (new Xlsx($spreadsheet))->save($path);
+        $spreadsheet->disconnectWorksheets();
+
+        return response()
+            ->download($path, $filename)
+            ->deleteFileAfterSend(true);
+    }
     public function destroy(Request $request, Institution $institution): JsonResponse
     {
         $this->authorize('delete', $institution);

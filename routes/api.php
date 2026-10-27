@@ -91,6 +91,10 @@ Route::prefix('v1')->group(function () {
         // - DELETE /api/v1/institutions/{id}    → desactivar institución [solo admin]
         // - POST   /api/v1/institutions/{id}/reset-password → nueva password institucional [solo admin]
         // -----------------------------------------------------------------------
+        // Exportación Excel del listado de efectores.
+Route::get('institutions/export', [InstitutionController::class, 'export']);
+Route::apiResource('institutions', InstitutionController::class);
+Route::post('institutions/{institution}/reset-password', [InstitutionController::class, 'resetPassword']);
         Route::apiResource('institutions', InstitutionController::class);
         Route::post('institutions/{institution}/reset-password', [InstitutionController::class, 'resetPassword']);
 

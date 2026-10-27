@@ -20,6 +20,7 @@ class ServiceTypeResource extends JsonResource
             'sector_label' => Sector::label($this->sector),
             'description'  => $this->description,
             'is_mandatory' => (bool) $this->is_mandatory,
+            'alert_on_registration' => (bool) $this->alert_on_registration,
             'is_active'    => (bool) $this->is_active,
             // Solo cuando se pidió withCount('childServices') (listado del catálogo).
             'usage_count'  => $this->whenCounted('childServices'),

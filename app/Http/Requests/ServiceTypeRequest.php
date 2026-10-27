@@ -28,6 +28,7 @@ class ServiceTypeRequest extends FormRequest
             'sector'       => [$req, Rule::in(Sector::keys())],
             'description'  => ['sometimes', 'nullable', 'string', 'max:1000'],
             'is_mandatory' => ['sometimes', 'boolean'],
+            'alert_on_registration' => ['sometimes', 'boolean'],
             'is_active'    => ['sometimes', 'boolean'],
         ];
     }

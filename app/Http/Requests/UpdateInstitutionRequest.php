@@ -89,8 +89,9 @@ class UpdateInstitutionRequest extends FormRequest
     public function withValidator($validator): void
     {
         $validator->after(function ($validator) {
-            $self = $this->route('institution')?->id;
-            if ($self && in_array($self, $this->input('articulation_ids', []) ?: [], true)) {
+    $self = $this->route('institution')?->id;
+
+    if ($self && in_array($self, $this->input('articulation_ids', []) ?: [], true)) {
                 $validator->errors()->add('articulation_ids', 'Una institución no puede articular consigo misma.');
             }
         });

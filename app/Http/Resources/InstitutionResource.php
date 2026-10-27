@@ -88,7 +88,20 @@ class InstitutionResource extends JsonResource
                 'id'   => $this->locality->department->province->id,
                 'name' => $this->locality->department->province->name,
             ] : null),
+            'children_count' => $this->when(
+    array_key_exists('children_count', $this->resource->getAttributes()),
+    fn () => (int) $this->children_count
+),
+
+'children_with_alerts_count' => $this->when(
+    array_key_exists('children_with_alerts_count', $this->resource->getAttributes()),
+    fn () => (int) $this->children_with_alerts_count
+),
             'is_active'   => $this->is_active,
+            'service_type_ids' => $this->whenLoaded(
+    'serviceTypes',
+    fn () => $this->serviceTypes->pluck('id')->values()->all()
+),
 
             // Configuración de niveles educativos — solo relevante cuando type === 'educacion'
             'offers_jardin'     => $this->offers_jardin,

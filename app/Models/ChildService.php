@@ -71,7 +71,12 @@ class ChildService extends Model
                     (int) $service->year,
                 );
             }
+// Activar automáticamente la alerta si el tipo de prestación lo requiere.
+$type = ServiceType::find($service->service_type_id);
 
+if ($type?->alert_on_registration) {
+    $service->has_alert = true;
+}
             if ($service->has_alert && ($service->isDirty('has_alert') || $service->alert_flagged_at === null)) {
                 $service->alert_flagged_at = now();
             }

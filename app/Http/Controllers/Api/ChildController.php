@@ -132,6 +132,16 @@ class ChildController extends Controller
                 ? $query->whereHas('healthRecord')
                 : $query->whereDoesntHave('healthRecord');
         }
+        if ($request->boolean('missing_data')) {
+    $query->where(function ($q) {
+        $q->whereDoesntHave('healthRecord')
+          ->orWhereDoesntHave('educationRecord')
+          ->orWhereHas('educationRecord', function ($edu) {
+              $edu->whereNull('level')
+                  ->orWhereNull('grade');
+          });
+    });
+}
 
         // Con/sin prestaciones cargadas. El usuario institucional solo cuenta las
         // prestaciones donde su institución es el efector (mismo criterio que el eager load).

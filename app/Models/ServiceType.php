@@ -31,7 +31,8 @@ class ServiceType extends Model
         'sector',
         'description',
         'is_mandatory',
-        'is_active',
+'alert_on_registration',
+'is_active',
         'created_by',
         'updated_by',
     ];
@@ -39,8 +40,9 @@ class ServiceType extends Model
     protected function casts(): array
     {
         return [
-            'is_mandatory' => 'boolean',
-            'is_active'    => 'boolean',
+            'is_mandatory'         => 'boolean',
+'alert_on_registration' => 'boolean',
+'is_active'             => 'boolean',
         ];
     }
 
@@ -56,7 +58,7 @@ class ServiceType extends Model
     public function getActivitylogOptions(): LogOptions
     {
         return LogOptions::defaults()
-            ->logOnly(['name', 'sector', 'description', 'is_mandatory', 'is_active'])
+            ->logOnly(['name', 'sector', 'description', 'is_mandatory', 'alert_on_registration', 'is_active'])
             ->logOnlyDirty();
     }
 

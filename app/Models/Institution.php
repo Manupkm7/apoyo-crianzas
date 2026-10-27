@@ -10,6 +10,7 @@ use Illuminate\Database\Eloquent\Concerns\HasUuids;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\BelongsToMany;
 use Illuminate\Database\Eloquent\SoftDeletes;
 use Illuminate\Foundation\Auth\User as Authenticatable;
 use Illuminate\Support\Collection;
@@ -139,6 +140,18 @@ class Institution extends Authenticatable implements SystemActor
     {
         return $this->belongsTo(ProgramArea::class);
     }
+    /**
+ * Prestaciones que ofrece este efector.
+ */
+public function serviceTypes(): BelongsToMany
+{
+    return $this->belongsToMany(
+        ServiceType::class,
+        'institution_service_type',
+        'institution_id',
+        'service_type_id'
+    )->withTimestamps();
+}
 
     // ── Articulaciones (con qué otros efectores trabaja) ───────────────────────
     // Relación simétrica: si A articula con B, B articula con A. Se guarda una
